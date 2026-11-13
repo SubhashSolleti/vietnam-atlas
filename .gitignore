@@ -1,0 +1,16 @@
+node_modules
+.next
+data/*.db*
+.env.local
+test-results
+playwright-report
+*.tsbuildinfo
+next-env.d.ts
+.next-e2e
+data/*.log
+data/link-report.json
+data/media-misses.txt
+data/media-review/
+data/uploads/
+data/e2e-uploads/
+data/initial-credentials.txt
