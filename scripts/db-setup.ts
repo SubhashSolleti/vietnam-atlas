@@ -17,9 +17,20 @@ const { db, client } = openDatabase("migrations");
 await migrate(db, { migrationsFolder: resolve(import.meta.dirname, "../src/db/migrations") });
 console.log(`db:setup: migrations applied to ${describeDatabase(databaseUrl("migrations"))}`);
 const rows = await db.execute<{ n: number }>(sql`select count(*)::int as n from users`);
+const users = rows[0]?.n ?? 0;
+if (users === 0) {
+  // Users are seeded last, so content without users means an earlier seed was cut off (e.g. a build timeout):
+  // clear the partial content so the seed can start from a clean slate. A database with users is never touched.
+  const partial = await db.execute<{ n: number }>(sql`select count(*)::int as n from regions`);
+  if ((partial[0]?.n ?? 0) > 0) {
+    const tables = await db.execute<{ tablename: string }>(sql`select tablename from pg_tables where schemaname = 'public'`);
+    await db.execute(sql.raw(`truncate ${tables.map((t) => `public."${t.tablename}"`).join(", ")} restart identity cascade`));
+    console.log("db:setup: cleared a partially seeded database.");
+  }
+}
 await client.end();
 
-if ((rows[0]?.n ?? 0) > 0) {
+if (users > 0) {
   console.log("db:setup: database already has content, not seeding.");
 } else {
   // Never let a hosted build generate passwords: they'd only exist in the build log.
