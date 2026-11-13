@@ -11,10 +11,10 @@ import { requireAdminPage } from "@/lib/auth";
 export default async function EditAttraction({ params }: { params: Promise<{ id: string }> }) {
   await requireAdminPage(undefined, "/admin/attractions");
   const { id } = await params;
-  const a = id === "new" ? null : db.select().from(t.attractions).where(eq(t.attractions.id, id)).get();
+  const a = id === "new" ? null : await db.select().from(t.attractions).where(eq(t.attractions.id, id)).get();
   if (id !== "new" && !a) notFound();
-  const dests = db.select({ id: t.destinations.id, name: t.destinations.name }).from(t.destinations).orderBy(asc(t.destinations.name)).all();
-  const images = a ? db.select({ link: t.entityMedia, m: t.media }).from(t.entityMedia).innerJoin(t.media, eq(t.media.id, t.entityMedia.mediaId)).where(and(eq(t.entityMedia.entityType, "attraction"), eq(t.entityMedia.entityId, a.id))).orderBy(asc(t.entityMedia.sort)).all() : [];
+  const dests = await db.select({ id: t.destinations.id, name: t.destinations.name }).from(t.destinations).orderBy(asc(t.destinations.name)).all();
+  const images = a ? await db.select({ link: t.entityMedia, m: t.media }).from(t.entityMedia).innerJoin(t.media, eq(t.media.id, t.entityMedia.mediaId)).where(and(eq(t.entityMedia.entityType, "attraction"), eq(t.entityMedia.entityId, a.id))).orderBy(asc(t.entityMedia.sort)).all() : [];
   return (
     <div>
       <Link href="/admin/attractions" className="text-xs text-muted hover:text-ink">← Attractions</Link>
@@ -22,7 +22,7 @@ export default async function EditAttraction({ params }: { params: Promise<{ id:
       <AttractionEditor id={a?.id ?? null} initial={a ?? null} destinations={dests} />
       {a && (
         <div className="mt-12 grid gap-10">
-          <SourcesEditor entityType="attraction" entityId={a.id} sources={sourcesFor("attraction", [a.id])} />
+          <SourcesEditor entityType="attraction" entityId={a.id} sources={await sourcesFor("attraction", [a.id])} />
           <MediaEditor entityType="attraction" entityId={a.id} images={images.map(({ link, m }) => ({ linkId: link.id, src: m.src, alt: m.alt, role: link.role, author: m.author, license: m.license }))} />
         </div>
       )}

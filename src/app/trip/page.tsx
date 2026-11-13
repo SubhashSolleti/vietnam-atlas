@@ -37,22 +37,22 @@ export default async function TripPage() {
       </div>
     );
   const { trip, member } = active;
-  const members = membersOf(trip.id);
-  const { days, items, legs, stays } = itineraryData(trip.id);
-  const { result: budget } = tripBudget(trip);
-  const alerts = planSnapshot(trip.id, { perPersonPlannedVnd: budget.maxPerPersonVnd, targetPerPersonVnd: budget.targetPerPersonVnd });
-  const catalog = getCatalog();
+  const members = await membersOf(trip.id);
+  const { days, items, legs, stays } = await itineraryData(trip.id);
+  const { result: budget } = await tripBudget(trip);
+  const alerts = await planSnapshot(trip.id, { perPersonPlannedVnd: budget.maxPerPersonVnd, targetPerPersonVnd: budget.targetPerPersonVnd });
+  const catalog = await getCatalog();
   const destById = new Map(catalog.destinations.map((d) => [d.id, d]));
   const actById = new Map(catalog.activities.map((a) => [a.id, a]));
   const legById = new Map(legs.map((l) => [l.id, l]));
-  const candidates = db.select().from(t.tripCandidates).where(eq(t.tripCandidates.tripId, trip.id)).all();
+  const candidates = await db.select().from(t.tripCandidates).where(eq(t.tripCandidates.tripId, trip.id)).all();
   const wish = user
-    ? db.select().from(t.wishlistItems).where(and(eq(t.wishlistItems.userId, user.id), eq(t.wishlistItems.entityType, "activity"))).all()
+    ? await db.select().from(t.wishlistItems).where(and(eq(t.wishlistItems.userId, user.id), eq(t.wishlistItems.entityType, "activity"))).all()
     : [];
   const scheduled = new Set(items.filter((i) => i.activityId).map((i) => i.activityId!));
-  const allTrips = myTrips(user!.id).map((x) => ({ id: x.trip.id, name: x.trip.name }));
+  const allTrips = (await myTrips(user!.id)).map((x) => ({ id: x.trip.id, name: x.trip.name }));
   const sourceIds = [...new Set([...candidates.filter((c) => c.status !== "rejected").map((c) => c.activityId), ...wish.map((w) => w.entityId)])];
-  const sourceAct = sourceIds.length ? db.select({ id: t.activities.id }).from(t.activities).where(inArray(t.activities.id, sourceIds)).all() : [];
+  const sourceAct = sourceIds.length ? await db.select({ id: t.activities.id }).from(t.activities).where(inArray(t.activities.id, sourceIds)).all() : [];
 
   return (
     <div className="pt-8">

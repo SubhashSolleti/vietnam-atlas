@@ -4,7 +4,7 @@ import { requireAdminPage } from "@/lib/auth";
 
 export default async function AuditLog() {
   await requireAdminPage(undefined, "/admin/audit");
-  const rows = db.select().from(t.adminAuditLogs).orderBy(desc(t.adminAuditLogs.createdAt)).limit(300).all();
+  const rows = await db.select().from(t.adminAuditLogs).orderBy(desc(t.adminAuditLogs.createdAt)).limit(300).all();
   return (
     <div>
       <h1 className="text-3xl">Audit log</h1>

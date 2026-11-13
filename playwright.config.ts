@@ -1,5 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
+/** A throwaway local Postgres database (never production). Start one with `npm run db:local`. */
+const E2E_DATABASE_URL = process.env.E2E_DATABASE_URL ?? "postgres://postgres:atlas-local@localhost:54329/atlas_e2e";
+
 const PORT = 3100;
 
 export default defineConfig({
@@ -20,6 +23,6 @@ export default defineConfig({
     url: `http://localhost:${PORT}/api/search?q=hanoi`,
     timeout: 600_000,
     reuseExistingServer: !!process.env.E2E_REUSE,
-    env: { DATABASE_PATH: "data/e2e.db", UPLOADS_DIR: "data/e2e-uploads", NEXT_DIST_DIR: ".next-e2e", NEXT_PUBLIC_SITE_URL: `http://localhost:${PORT}`, INSECURE_COOKIES: "1" },
+    env: { DATABASE_URL: E2E_DATABASE_URL, NEXT_DIST_DIR: ".next-e2e", NEXT_PUBLIC_SITE_URL: `http://localhost:${PORT}`, INSECURE_COOKIES: "1" },
   },
 });

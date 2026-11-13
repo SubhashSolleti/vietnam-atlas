@@ -5,8 +5,8 @@ import { requireAdminPage } from "@/lib/auth";
 
 export default async function AdminEvents() {
   await requireAdminPage(undefined, "/admin/events");
-  const events = db.select().from(t.professionalEvents).orderBy(asc(t.professionalEvents.startDate)).all();
-  const orgs = db.select().from(t.eventOrganisers).orderBy(asc(t.eventOrganisers.name)).all();
+  const events = await db.select().from(t.professionalEvents).orderBy(asc(t.professionalEvents.startDate)).all();
+  const orgs = await db.select().from(t.eventOrganisers).orderBy(asc(t.eventOrganisers.name)).all();
   return (
     <div>
       <h1 className="text-3xl">Events &amp; communities</h1>

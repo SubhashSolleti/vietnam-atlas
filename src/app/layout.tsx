@@ -43,7 +43,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       <body className="min-h-dvh">
         <ToastProvider>
           <ConfirmProvider>
-          <FxProvider value={getFx()}>
+          <FxProvider value={await getFx()}>
           <UserStateProvider value={state}>
             <SiteHeader initialTheme={theme} overlay />
             <main id="main">{children}</main>

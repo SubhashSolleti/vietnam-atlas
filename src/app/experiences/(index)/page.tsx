@@ -32,8 +32,8 @@ const PAGE_SIZE = 24;
 export default async function ExperiencesPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const sp = await searchParams;
   const filters = parseActivityFilters(sp);
-  const { activities, destinations, regions } = getCatalog();
-  const fx = getFx();
+  const { activities, destinations, regions } = await getCatalog();
+  const fx = await getFx();
   const results = filterActivities(activities, filters, fx.inrToVnd);
   const pages = Math.max(1, Math.ceil(results.length / PAGE_SIZE));
   // Out-of-range page numbers show the last page rather than an empty list under a full count.

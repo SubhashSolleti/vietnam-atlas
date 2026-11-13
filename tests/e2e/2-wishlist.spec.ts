@@ -12,11 +12,14 @@ test("Scenario 2: wishlist: save several, filter by price, compare, remove, pers
     titles.push((await card.getByRole("heading").textContent())!.trim());
     await card.getByRole("button", { name: /^Save .* to wishlist$/ }).click();
     await expect(card.getByRole("button", { name: /^Remove .* from wishlist$/ })).toBeVisible();
+    // The button flips optimistically; the toast confirms the server saved it.
+    await expect(page.getByRole("status").filter({ hasText: /^Saved/ }).last()).toBeVisible();
   }
   // a free one too
   await page.goto("/experiences?destination=hanoi&tier=free");
   await page.locator("article").first().getByRole("button", { name: /^Save .* to wishlist$/ }).click();
   await expect(page.locator("article").first().getByRole("button", { name: /^Remove .* from wishlist$/ })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: /^Saved/ }).last()).toBeVisible();
 
   await page.goto("/wishlist");
   await expect(page.getByRole("heading", { name: "Saved for later" })).toBeVisible();

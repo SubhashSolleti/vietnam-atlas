@@ -9,12 +9,12 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Not signed in" }, { status: 401 });
   try {
-    assertMember(id, user.id);
+    await assertMember(id, user.id);
   } catch (e) {
     if (e instanceof TripAccessError) return NextResponse.json({ error: e.message }, { status: 403 });
     throw e;
   }
-  const days = db
+  const days = await db
     .select({ id: t.itineraryDays.id, date: t.itineraryDays.date, destinationName: t.destinations.name })
     .from(t.itineraryDays)
     .leftJoin(t.destinations, eq(t.destinations.id, t.itineraryDays.destinationId))

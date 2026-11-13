@@ -15,8 +15,8 @@ export const metadata: Metadata = {
   alternates: { canonical: "/explore" },
 };
 
-export default function ExplorePage() {
-  const { regions, destinations, activities } = getCatalog();
+export default async function ExplorePage() {
+  const { regions, destinations, activities } = await getCatalog();
   const top = destinations.filter((d) => !d.parentSlug);
   return (
     <div className="container-x pt-10">

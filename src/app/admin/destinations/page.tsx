@@ -11,7 +11,7 @@ import { requireAdminPage } from "@/lib/auth";
 export default async function AdminDestinations({ searchParams }: { searchParams: Promise<{ q?: string; status?: string }> }) {
   await requireAdminPage(undefined, "/admin/destinations");
   const sp = await searchParams;
-  const rows = db.select({ d: t.destinations, r: t.regions.name }).from(t.destinations).innerJoin(t.regions, eq(t.regions.id, t.destinations.regionId)).orderBy(asc(t.destinations.name)).all()
+  const rows = (await db.select({ d: t.destinations, r: t.regions.name }).from(t.destinations).innerJoin(t.regions, eq(t.regions.id, t.destinations.regionId)).orderBy(asc(t.destinations.name)).all())
     .filter(({ d }) => (!sp.status || d.status === sp.status) && (!sp.q || normalise(`${d.name} ${d.province}`).includes(normalise(sp.q))));
   return (
     <div>

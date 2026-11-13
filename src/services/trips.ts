@@ -21,8 +21,8 @@ export class TripAccessError extends Error {
   }
 }
 
-export function myTrips(userId: string) {
-  return db
+export async function myTrips(userId: string) {
+  return await db
     .select({ trip: t.trips, member: t.tripMembers })
     .from(t.tripMembers)
     .innerJoin(t.trips, eq(t.trips.id, t.tripMembers.tripId))
@@ -32,67 +32,67 @@ export function myTrips(userId: string) {
 }
 
 /** Server-side membership check used by every trip read/write. */
-export function assertMember(tripId: string, userId: string, roles?: Member["role"][]) {
-  const member = db
+export async function assertMember(tripId: string, userId: string, roles?: Member["role"][]) {
+  const member = await db
     .select()
     .from(t.tripMembers)
     .where(and(eq(t.tripMembers.tripId, tripId), eq(t.tripMembers.userId, userId)))
     .get();
   if (!member) throw new TripAccessError();
   if (roles && !roles.includes(member.role)) throw new TripAccessError("Only the trip owner or an editor can do that.");
-  const trip = db.select().from(t.trips).where(eq(t.trips.id, tripId)).get();
+  const trip = await db.select().from(t.trips).where(eq(t.trips.id, tripId)).get();
   if (!trip) throw new TripAccessError("Trip not found.");
   return { trip, member };
 }
 
 export async function resolveActiveTrip(userId: string | null | undefined) {
   if (!userId) return null;
-  const trips = myTrips(userId);
+  const trips = await myTrips(userId);
   if (!trips.length) return null;
   const jar = await cookies();
   const wanted = jar.get(ACTIVE_TRIP_COOKIE)?.value;
   return trips.find((x) => x.trip.id === wanted) ?? trips[0]!;
 }
 
-export function membersOf(tripId: string) {
-  return db.select().from(t.tripMembers).where(eq(t.tripMembers.tripId, tripId)).orderBy(asc(t.tripMembers.sort)).all();
+export async function membersOf(tripId: string) {
+  return await db.select().from(t.tripMembers).where(eq(t.tripMembers.tripId, tripId)).orderBy(asc(t.tripMembers.sort)).all();
 }
 
-export function ensureItineraryDays(trip: Pick<Trip, "id" | "startDate" | "endDate">, conn: Pick<typeof db, "select" | "insert"> = db) {
+export async function ensureItineraryDays(trip: Pick<Trip, "id" | "startDate" | "endDate">, conn: Pick<typeof db, "select" | "insert"> = db) {
   const existing = new Set(
-    conn.select({ date: t.itineraryDays.date }).from(t.itineraryDays).where(eq(t.itineraryDays.tripId, trip.id)).all().map((d) => d.date),
+    (await conn.select({ date: t.itineraryDays.date }).from(t.itineraryDays).where(eq(t.itineraryDays.tripId, trip.id)).all()).map((d) => d.date),
   );
   const missing = dateRange(trip.startDate, trip.endDate).filter((d) => !existing.has(d));
-  if (missing.length) conn.insert(t.itineraryDays).values(missing.map((date) => ({ tripId: trip.id, date }))).run();
+  if (missing.length) await conn.insert(t.itineraryDays).values(missing.map((date) => ({ tripId: trip.id, date }))).run();
 }
 
 /* ───────────── Group workspace ───────────── */
 
-export function tripWorkspace(tripId: string) {
-  const members = membersOf(tripId);
-  const candidates = db.select().from(t.tripCandidates).where(eq(t.tripCandidates.tripId, tripId)).orderBy(desc(t.tripCandidates.createdAt)).all();
+export async function tripWorkspace(tripId: string) {
+  const members = await membersOf(tripId);
+  const candidates = await db.select().from(t.tripCandidates).where(eq(t.tripCandidates.tripId, tripId)).orderBy(desc(t.tripCandidates.createdAt)).all();
   const ids = candidates.map((c) => c.id);
-  const votes = ids.length ? db.select().from(t.groupVotes).where(inArray(t.groupVotes.candidateId, ids)).all() : [];
+  const votes = ids.length ? await db.select().from(t.groupVotes).where(inArray(t.groupVotes.candidateId, ids)).all() : [];
   const comments = ids.length
-    ? db
+    ? await db
         .select()
         .from(t.comments)
         .where(and(inArray(t.comments.candidateId, ids), isNull(t.comments.deletedAt)))
         .orderBy(asc(t.comments.createdAt))
         .all()
     : [];
-  const prefs = members.length ? db.select().from(t.tripPreferences).where(inArray(t.tripPreferences.memberId, members.map((m) => m.id))).all() : [];
+  const prefs = members.length ? await db.select().from(t.tripPreferences).where(inArray(t.tripPreferences.memberId, members.map((m) => m.id))).all() : [];
   const prices = candidates.length
     ? new Map(
-        db
+        (await db
           .select()
           .from(t.activityPrices)
           .where(and(inArray(t.activityPrices.activityId, candidates.map((c) => c.activityId)), eq(t.activityPrices.isCurrent, true)))
-          .all()
+          .all())
           .map((p) => [p.activityId, p]),
       )
     : new Map();
-  const catalog = getCatalog();
+  const catalog = await getCatalog();
   const cardById = new Map(catalog.activities.map((a) => [a.id, a]));
   return {
     members,
@@ -121,7 +121,7 @@ export function tripMonths(trip: Pick<Trip, "startDate" | "endDate">) {
   return [...s];
 }
 
-export function consensusFor(trip: Trip, workspace: ReturnType<typeof tripWorkspace>, remainingPerPersonVnd: number | null) {
+export function consensusFor(trip: Trip, workspace: Awaited<ReturnType<typeof tripWorkspace>>, remainingPerPersonVnd: number | null) {
   const months = tripMonths(trip);
   const analyses = workspace.candidates.map((c) =>
     analyseCandidate(
@@ -145,17 +145,17 @@ export function consensusFor(trip: Trip, workspace: ReturnType<typeof tripWorksp
 /* ───────────── Itinerary ───────────── */
 
 /** Cached per request: the trip page asks for the itinerary, the plan alerts and the budget. */
-export const itineraryData = cache((tripId: string) => {
-  const days = db.select().from(t.itineraryDays).where(eq(t.itineraryDays.tripId, tripId)).orderBy(asc(t.itineraryDays.date)).all();
-  const items = db.select().from(t.itineraryItems).where(eq(t.itineraryItems.tripId, tripId)).orderBy(asc(t.itineraryItems.sort)).all();
-  const legs = db.select().from(t.transportLegs).where(eq(t.transportLegs.tripId, tripId)).orderBy(asc(t.transportLegs.departAt)).all();
-  const stays = db.select().from(t.accommodations).where(eq(t.accommodations.tripId, tripId)).orderBy(asc(t.accommodations.checkIn)).all();
+export const itineraryData = cache(async (tripId: string) => {
+  const days = await db.select().from(t.itineraryDays).where(eq(t.itineraryDays.tripId, tripId)).orderBy(asc(t.itineraryDays.date)).all();
+  const items = await db.select().from(t.itineraryItems).where(eq(t.itineraryItems.tripId, tripId)).orderBy(asc(t.itineraryItems.sort)).all();
+  const legs = await db.select().from(t.transportLegs).where(eq(t.transportLegs.tripId, tripId)).orderBy(asc(t.transportLegs.departAt)).all();
+  const stays = await db.select().from(t.accommodations).where(eq(t.accommodations.tripId, tripId)).orderBy(asc(t.accommodations.checkIn)).all();
   return { days, items, legs, stays };
 });
 
-export function planSnapshot(tripId: string, budget?: { perPersonPlannedVnd: number; targetPerPersonVnd: number | null }) {
-  const { days, items, legs } = itineraryData(tripId);
-  const catalog = getCatalog();
+export async function planSnapshot(tripId: string, budget?: { perPersonPlannedVnd: number; targetPerPersonVnd: number | null }) {
+  const { days, items, legs } = await itineraryData(tripId);
+  const catalog = await getCatalog();
   const destById = new Map(catalog.destinations.map((d) => [d.id, d]));
   const actById = new Map(catalog.activities.map((a) => [a.id, a]));
   const place = (id: string | null | undefined) => {
@@ -207,18 +207,18 @@ export function planSnapshot(tripId: string, budget?: { perPersonPlannedVnd: num
 
 /* ───────────── Budget ───────────── */
 
-export function tripBudget(trip: Trip) {
-  const members = membersOf(trip.id);
+export async function tripBudget(trip: Trip) {
+  const members = await membersOf(trip.id);
   const memberIds = members.map((m) => m.id);
-  const fx = getFx();
-  const { items, legs, stays } = itineraryData(trip.id);
-  const days = db.select().from(t.itineraryDays).where(eq(t.itineraryDays.tripId, trip.id)).all();
+  const fx = await getFx();
+  const { items, legs, stays } = await itineraryData(trip.id);
+  const days = await db.select().from(t.itineraryDays).where(eq(t.itineraryDays.tripId, trip.id)).all();
   const dayById = new Map(days.map((d) => [d.id, d]));
-  const expenses = db.select().from(t.expenses).where(eq(t.expenses.tripId, trip.id)).all();
-  const candidates = db.select().from(t.tripCandidates).where(eq(t.tripCandidates.tripId, trip.id)).all();
-  const catalog = getCatalog();
+  const expenses = await db.select().from(t.expenses).where(eq(t.expenses.tripId, trip.id)).all();
+  const candidates = await db.select().from(t.tripCandidates).where(eq(t.tripCandidates.tripId, trip.id)).all();
+  const catalog = await getCatalog();
   const actById = new Map(catalog.activities.map((a) => [a.id, a]));
-  const cats = db.select().from(t.budgetCategories).orderBy(asc(t.budgetCategories.sort)).all();
+  const cats = await db.select().from(t.budgetCategories).orderBy(asc(t.budgetCategories.sort)).all();
   const baselines: BaselineCategory[] = cats.map((c) => ({
     slug: c.slug,
     name: c.name,
@@ -252,11 +252,11 @@ export function tripBudget(trip: Trip) {
   const approved = candidates.filter((c) => c.status === "approved" && !scheduledActivityIds.has(c.activityId));
   const approvedPrices = approved.length
     ? new Map(
-        db
+        (await db
           .select()
           .from(t.activityPrices)
           .where(and(inArray(t.activityPrices.activityId, approved.map((c) => c.activityId)), eq(t.activityPrices.isCurrent, true)))
-          .all()
+          .all())
           .map((p) => [p.activityId, p]),
       )
     : new Map();
@@ -333,7 +333,7 @@ export function tripBudget(trip: Trip) {
 
   // Experiences that are one ticket (Ba Na Hills + Golden Bridge, the Hoi An coupon ticket…) are budgeted once.
   const bundleRows = activityOfLine.size
-    ? db
+    ? await db
         .select({ activityId: t.activityPrices.activityId, bundle: t.activityPrices.ticketBundle })
         .from(t.activityPrices)
         .where(and(inArray(t.activityPrices.activityId, [...new Set(activityOfLine.values())]), eq(t.activityPrices.isCurrent, true)))

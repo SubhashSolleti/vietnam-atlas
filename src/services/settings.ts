@@ -3,18 +3,18 @@ import { eq } from "drizzle-orm";
 import { db, t } from "@/db/client";
 import { DEFAULT_FX, type FxRates } from "@/lib/money";
 
-export function getSetting<T>(key: string, fallback: T): T {
-  const row = db.select().from(t.settings).where(eq(t.settings.key, key)).get();
+export async function getSetting<T>(key: string, fallback: T): Promise<T> {
+  const row = await db.select().from(t.settings).where(eq(t.settings.key, key)).get();
   return (row?.value as T) ?? fallback;
 }
 
-export function setSetting(key: string, value: unknown, userId?: string) {
-  db.insert(t.settings)
+export async function setSetting(key: string, value: unknown, userId?: string) {
+  await db.insert(t.settings)
     .values({ key, value, updatedBy: userId ?? null })
     .onConflictDoUpdate({ target: t.settings.key, set: { value, updatedBy: userId ?? null, updatedAt: new Date().toISOString() } })
     .run();
 }
 
-export function getFx(): FxRates {
-  return { ...DEFAULT_FX, ...getSetting<Partial<FxRates>>("fx", {}) };
+export async function getFx(): Promise<FxRates> {
+  return { ...DEFAULT_FX, ...(await getSetting<Partial<FxRates>>("fx", {})) };
 }

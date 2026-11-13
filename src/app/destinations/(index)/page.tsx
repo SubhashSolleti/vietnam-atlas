@@ -42,7 +42,7 @@ function apply(all: DestinationCardData[], sp: SP, skip?: string) {
 
 export default async function DestinationsPage({ searchParams }: { searchParams: Promise<SP> }) {
   const sp = await searchParams;
-  const { destinations, regions } = getCatalog();
+  const { destinations, regions } = await getCatalog();
   const view = one(sp.view) === "map" ? "map" : "list";
   const sort = one(sp.sort) || "popular";
   let items = apply(destinations, sp);

@@ -22,12 +22,14 @@ const DEC_RANK: Record<string, number> = { good: 4, variable: 3, unknown: 2, poo
 
 export default async function ComparePage() {
   const user = await getCurrentUser();
-  const ids = user ? db.select().from(t.comparisons).where(eq(t.comparisons.userId, user.id)).orderBy(asc(t.comparisons.createdAt)).all().map((c) => c.activityId) : [];
-  const cat = getCatalog();
-  const items = ids
-    .map((id) => cat.activities.find((a) => a.id === id))
-    .filter((a): a is NonNullable<typeof a> => !!a)
-    .map((card) => ({ card, detail: getActivityBySlug(card.slug)! }));
+  const ids = user ? (await db.select().from(t.comparisons).where(eq(t.comparisons.userId, user.id)).orderBy(asc(t.comparisons.createdAt)).all()).map((c) => c.activityId) : [];
+  const cat = await getCatalog();
+  const items = await Promise.all(
+    ids
+      .map((id) => cat.activities.find((a) => a.id === id))
+      .filter((a): a is NonNullable<typeof a> => !!a)
+      .map(async (card) => ({ card, detail: (await getActivityBySlug(card.slug))! })),
+  );
   if (items.length < 2)
     return (
       <div className="container-x max-w-2xl pt-16">

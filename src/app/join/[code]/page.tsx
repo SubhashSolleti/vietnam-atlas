@@ -18,11 +18,11 @@ export default async function JoinPage({ params, searchParams }: { params: Promi
   } catch {
     /* malformed escape: treat as an unknown code */
   }
-  const trip = db.select().from(t.trips).where(eq(t.trips.inviteCode, decoded.toUpperCase().slice(0, 16))).get();
+  const trip = await db.select().from(t.trips).where(eq(t.trips.inviteCode, decoded.toUpperCase().slice(0, 16))).get();
   if (!trip) notFound();
   const user = await getCurrentUser();
-  const members = membersOf(trip.id);
-  const mine = user ? db.select().from(t.tripMembers).where(and(eq(t.tripMembers.tripId, trip.id), eq(t.tripMembers.userId, user.id))).get() : null;
+  const members = await membersOf(trip.id);
+  const mine = user ? await db.select().from(t.tripMembers).where(and(eq(t.tripMembers.tripId, trip.id), eq(t.tripMembers.userId, user.id))).get() : null;
   return (
     <div className="container-x max-w-2xl pt-12">
       <p className="eyebrow mb-2">You're invited</p>

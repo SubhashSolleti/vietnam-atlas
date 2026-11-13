@@ -14,7 +14,7 @@ export const metadata: Metadata = { title: "My Wishlist", robots: { index: false
 
 export default async function WishlistPage() {
   const user = await getCurrentUser();
-  const rows = user ? db.select().from(t.wishlistItems).where(eq(t.wishlistItems.userId, user.id)).all() : [];
+  const rows = user ? await db.select().from(t.wishlistItems).where(eq(t.wishlistItems.userId, user.id)).all() : [];
   if (!rows.length)
     return (
       <div className="container-x max-w-2xl pt-16">
@@ -23,16 +23,16 @@ export default async function WishlistPage() {
         </EmptyState>
       </div>
     );
-  const catalog = getCatalog();
+  const catalog = await getCatalog();
   const actById = new Map(catalog.activities.map((a) => [a.id, a]));
   const destById = new Map(catalog.destinations.map((d) => [d.id, d]));
   const attrIds = rows.filter((r) => r.entityType === "attraction").map((r) => r.entityId);
   const attrs = attrIds.length
-    ? db.select({ a: t.attractions, d: t.destinations }).from(t.attractions).innerJoin(t.destinations, eq(t.destinations.id, t.attractions.destinationId)).where(inArray(t.attractions.id, attrIds)).all()
+    ? await db.select({ a: t.attractions, d: t.destinations }).from(t.attractions).innerJoin(t.destinations, eq(t.destinations.id, t.attractions.destinationId)).where(inArray(t.attractions.id, attrIds)).all()
     : [];
-  const attrImg = imagesFor("attraction", attrIds);
+  const attrImg = await imagesFor("attraction", attrIds);
   const active = await resolveActiveTrip(user?.id);
-  const cands = active ? db.select().from(t.tripCandidates).where(eq(t.tripCandidates.tripId, active.trip.id)).all() : [];
+  const cands = active ? await db.select().from(t.tripCandidates).where(eq(t.tripCandidates.tripId, active.trip.id)).all() : [];
 
   const entries: SavedEntry[] = rows
     .map((r): SavedEntry | null => {

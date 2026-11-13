@@ -20,9 +20,9 @@ const ATTR_TAGS: Record<string, string[]> = {
 
 export default async function MapPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   const sp = await searchParams;
-  const { destinations, activities } = getCatalog();
+  const { destinations, activities } = await getCatalog();
   const destRegion = new Map(destinations.map((d) => [d.id, d.regionSlug]));
-  const attrs = db.select({ a: t.attractions, d: t.destinations }).from(t.attractions).innerJoin(t.destinations, eq(t.destinations.id, t.attractions.destinationId)).where(eq(t.attractions.status, "published")).all();
+  const attrs = await db.select({ a: t.attractions, d: t.destinations }).from(t.attractions).innerJoin(t.destinations, eq(t.destinations.id, t.attractions.destinationId)).where(eq(t.attractions.status, "published")).all();
 
   const points: ExplorerPoint[] = [
     ...destinations.map((d) => ({ id: d.id, kind: "destination" as const, title: d.name, subtitle: d.tagline, region: d.regionSlug, lat: d.lat, lng: d.lng, href: `/destinations/${d.slug}`, image: d.image?.src ?? null, tags: [] as string[], meta: `${d.activityCount} experiences`, destinationSlug: d.slug })),
@@ -47,7 +47,7 @@ export default async function MapPage({ searchParams }: { searchParams: Promise<
   const active = await resolveActiveTrip(user?.id);
   let stops: { id: string; name: string; lat: number; lng: number; dates: string }[] = [];
   if (active) {
-    const days = db.select().from(t.itineraryDays).where(eq(t.itineraryDays.tripId, active.trip.id)).orderBy(asc(t.itineraryDays.date)).all();
+    const days = await db.select().from(t.itineraryDays).where(eq(t.itineraryDays.tripId, active.trip.id)).orderBy(asc(t.itineraryDays.date)).all();
     const byId = new Map(destinations.map((d) => [d.id, d]));
     for (const d of days) {
       const dest = d.destinationId ? byId.get(d.destinationId) : null;

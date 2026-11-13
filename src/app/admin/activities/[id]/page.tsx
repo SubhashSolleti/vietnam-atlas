@@ -13,16 +13,16 @@ export default async function EditActivity({ params }: { params: Promise<{ id: s
   await requireAdminPage(undefined, "/admin/activities");
   const { id } = await params;
   const isNew = id === "new";
-  const a = isNew ? null : db.select().from(t.activities).where(eq(t.activities.id, id)).get();
+  const a = isNew ? null : await db.select().from(t.activities).where(eq(t.activities.id, id)).get();
   if (!isNew && !a) notFound();
-  const price = a ? db.select().from(t.activityPrices).where(and(eq(t.activityPrices.activityId, a.id), eq(t.activityPrices.isCurrent, true))).get() : null;
-  const history = a ? db.select().from(t.activityPrices).where(eq(t.activityPrices.activityId, a.id)).orderBy(asc(t.activityPrices.createdAt)).all() : [];
-  const cats = db.select().from(t.activityCategories).orderBy(asc(t.activityCategories.sort)).all();
-  const linked = a ? db.select({ id: t.activityCategoryLinks.categoryId }).from(t.activityCategoryLinks).where(eq(t.activityCategoryLinks.activityId, a.id)).all().map((x) => cats.find((c) => c.id === x.id)?.slug).filter(Boolean) as string[] : [];
-  const dests = db.select({ id: t.destinations.id, name: t.destinations.name }).from(t.destinations).orderBy(asc(t.destinations.name)).all();
-  const attrs = db.select({ id: t.attractions.id, name: t.attractions.name, destinationId: t.attractions.destinationId }).from(t.attractions).orderBy(asc(t.attractions.name)).all();
+  const price = a ? await db.select().from(t.activityPrices).where(and(eq(t.activityPrices.activityId, a.id), eq(t.activityPrices.isCurrent, true))).get() : null;
+  const history = a ? await db.select().from(t.activityPrices).where(eq(t.activityPrices.activityId, a.id)).orderBy(asc(t.activityPrices.createdAt)).all() : [];
+  const cats = await db.select().from(t.activityCategories).orderBy(asc(t.activityCategories.sort)).all();
+  const linked = a ? (await db.select({ id: t.activityCategoryLinks.categoryId }).from(t.activityCategoryLinks).where(eq(t.activityCategoryLinks.activityId, a.id)).all()).map((x) => cats.find((c) => c.id === x.id)?.slug).filter(Boolean) as string[] : [];
+  const dests = await db.select({ id: t.destinations.id, name: t.destinations.name }).from(t.destinations).orderBy(asc(t.destinations.name)).all();
+  const attrs = await db.select({ id: t.attractions.id, name: t.attractions.name, destinationId: t.attractions.destinationId }).from(t.attractions).orderBy(asc(t.attractions.name)).all();
   const images = a
-    ? db.select({ link: t.entityMedia, m: t.media }).from(t.entityMedia).innerJoin(t.media, eq(t.media.id, t.entityMedia.mediaId)).where(and(eq(t.entityMedia.entityType, "activity"), eq(t.entityMedia.entityId, a.id))).orderBy(asc(t.entityMedia.sort)).all()
+    ? await db.select({ link: t.entityMedia, m: t.media }).from(t.entityMedia).innerJoin(t.media, eq(t.media.id, t.entityMedia.mediaId)).where(and(eq(t.entityMedia.entityType, "activity"), eq(t.entityMedia.entityId, a.id))).orderBy(asc(t.entityMedia.sort)).all()
     : [];
   return (
     <div>
@@ -42,7 +42,7 @@ export default async function EditActivity({ params }: { params: Promise<{ id: s
       />
       {a ? (
         <div className="mt-12 grid gap-10">
-          <SourcesEditor entityType="activity" entityId={a.id} sources={sourcesFor("activity", [a.id])} />
+          <SourcesEditor entityType="activity" entityId={a.id} sources={await sourcesFor("activity", [a.id])} />
           <MediaEditor entityType="activity" entityId={a.id} images={images.map(({ link, m }) => ({ linkId: link.id, src: m.src, alt: m.alt, role: link.role, author: m.author, license: m.license }))} />
           {history.length > 1 && (
             <section>

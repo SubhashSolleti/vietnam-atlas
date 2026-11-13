@@ -12,9 +12,9 @@ const entity = z.object({
   entityId: z.string().uuid(),
 });
 
-function assertEntityExists(entityType: "activity" | "attraction" | "destination", entityId: string) {
+async function assertEntityExists(entityType: "activity" | "attraction" | "destination", entityId: string) {
   const table = entityType === "activity" ? t.activities : entityType === "attraction" ? t.attractions : t.destinations;
-  const row = db.select({ id: table.id }).from(table).where(eq(table.id, entityId)).get();
+  const row = await db.select({ id: table.id }).from(table).where(eq(table.id, entityId)).get();
   if (!row) throw new UserError("That item no longer exists.");
 }
 
@@ -27,12 +27,12 @@ export async function toggleWishlist(input: { entityType: "activity" | "attracti
     const { entityType, entityId } = entity.parse(input);
     const save = z.boolean().optional().parse(input.save);
     const user = await requireUser();
-    assertEntityExists(entityType, entityId);
+    await assertEntityExists(entityType, entityId);
     const where = and(eq(t.wishlistItems.userId, user.id), eq(t.wishlistItems.entityType, entityType), eq(t.wishlistItems.entityId, entityId));
-    const existing = db.select().from(t.wishlistItems).where(where).get();
+    const existing = await db.select().from(t.wishlistItems).where(where).get();
     const want = save ?? !existing;
-    if (!want && existing) db.delete(t.wishlistItems).where(eq(t.wishlistItems.id, existing.id)).run();
-    if (want && !existing) db.insert(t.wishlistItems).values({ userId: user.id, entityType, entityId, state: "wishlist" }).onConflictDoNothing().run();
+    if (!want && existing) await db.delete(t.wishlistItems).where(eq(t.wishlistItems.id, existing.id)).run();
+    if (want && !existing) await db.insert(t.wishlistItems).values({ userId: user.id, entityType, entityId, state: "wishlist" }).onConflictDoNothing().run();
     revalidatePath("/", "layout");
     return { saved: want };
   });
@@ -49,13 +49,13 @@ export async function setWishlistState(input: z.input<typeof stateSchema>) {
   return run(async () => {
     const v = stateSchema.parse(input);
     const user = await requireUser();
-    assertEntityExists(v.entityType, v.entityId);
+    await assertEntityExists(v.entityType, v.entityId);
     const patch = {
       ...(v.state ? { state: v.state } : {}),
       ...(v.priority ? { priority: v.priority } : {}),
       ...(v.note !== undefined ? { note: v.note?.trim() || null } : {}),
     };
-    db.insert(t.wishlistItems)
+    await db.insert(t.wishlistItems)
       .values({ userId: user.id, entityType: v.entityType, entityId: v.entityId, state: v.state ?? "wishlist", priority: v.priority ?? 2, note: v.note ?? null })
       .onConflictDoUpdate({ target: [t.wishlistItems.userId, t.wishlistItems.entityType, t.wishlistItems.entityId], set: patch })
       .run();
@@ -69,7 +69,7 @@ export async function removeWishlistItems(ids: string[]) {
     const parsed = z.array(z.string().uuid()).max(500).parse(ids);
     const user = await requireUser();
     if (parsed.length)
-      db.delete(t.wishlistItems).where(and(eq(t.wishlistItems.userId, user.id), inArray(t.wishlistItems.id, parsed))).run();
+      await db.delete(t.wishlistItems).where(and(eq(t.wishlistItems.userId, user.id), inArray(t.wishlistItems.id, parsed))).run();
     revalidatePath("/", "layout");
     return { removed: parsed.length };
   });
@@ -81,19 +81,19 @@ export async function toggleCompare(activityId: string, add?: boolean) {
     const id = z.string().uuid().parse(activityId);
     z.boolean().optional().parse(add);
     const user = await requireUser();
-    assertEntityExists("activity", id);
+    await assertEntityExists("activity", id);
     const where = and(eq(t.comparisons.userId, user.id), eq(t.comparisons.activityId, id));
-    const existing = db.select().from(t.comparisons).where(where).get();
+    const existing = await db.select().from(t.comparisons).where(where).get();
     const want = add ?? !existing;
     if (!want) {
-      if (existing) db.delete(t.comparisons).where(where).run();
+      if (existing) await db.delete(t.comparisons).where(where).run();
     } else if (!existing) {
-      const count = db.select().from(t.comparisons).where(eq(t.comparisons.userId, user.id)).all().length;
+      const count = (await db.select().from(t.comparisons).where(eq(t.comparisons.userId, user.id)).all()).length;
       if (count >= 4) throw new UserError("You can compare up to 4 activities. Remove one first.");
-      db.insert(t.comparisons).values({ userId: user.id, activityId: id }).run();
+      await db.insert(t.comparisons).values({ userId: user.id, activityId: id }).run();
     }
     revalidatePath("/", "layout");
-    const count = db.select().from(t.comparisons).where(eq(t.comparisons.userId, user.id)).all().length;
+    const count = (await db.select().from(t.comparisons).where(eq(t.comparisons.userId, user.id)).all()).length;
     return { inCompare: want, count };
   });
 }
@@ -101,7 +101,7 @@ export async function toggleCompare(activityId: string, add?: boolean) {
 export async function clearCompare() {
   return run(async () => {
     const user = await requireUser();
-    db.delete(t.comparisons).where(eq(t.comparisons.userId, user.id)).run();
+    await db.delete(t.comparisons).where(eq(t.comparisons.userId, user.id)).run();
     revalidatePath("/", "layout");
     return {};
   });

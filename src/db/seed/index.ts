@@ -20,7 +20,8 @@ import { BUNDLE_OF } from "../../content/ticket-bundles";
 import { DEFAULT_FX } from "../../lib/money";
 import { hashPasswordSync } from "./password";
 
-const db = openDatabase();
+// Seeding runs on an empty database and is simply re-run on failure, so it uses plain statements (no transactions).
+const { db, client } = openDatabase("migrations");
 const ROOT = resolve(import.meta.dirname, "../../..");
 const VERIFIED_AT = "2026-11-12";
 
@@ -63,26 +64,26 @@ function manifest(): Map<string, MediaManifestEntry[]> {
 }
 
 const sourceCache = new Map<string, string>();
-function upsertSource(s: SourceRef) {
+async function upsertSource(s: SourceRef) {
   const key = `${s.url}|${s.title}`;
   const cached = sourceCache.get(key);
   if (cached) return cached;
-  const row = db
+  const row = (await db
     .insert(t.sources)
     .values({ title: s.title, url: s.url, publisher: s.publisher, kind: s.kind })
     .onConflictDoNothing()
     .returning({ id: t.sources.id })
-    .get();
-  const id = row?.id ?? db.select({ id: t.sources.id }).from(t.sources).where(eq(t.sources.url, s.url)).get()!.id;
+    .get())!;
+  const id = row?.id ?? (await db.select({ id: t.sources.id }).from(t.sources).where(eq(t.sources.url, s.url)).get())!.id;
   sourceCache.set(key, id);
   return id;
 }
 
-function linkSources(entityType: string, entityId: string, list: SourceRef[]) {
+async function linkSources(entityType: string, entityId: string, list: SourceRef[]) {
   for (const s of list) {
-    db.insert(t.sourceVerifications)
+    await db.insert(t.sourceVerifications)
       .values({
-        sourceId: upsertSource(s),
+        sourceId: await upsertSource(s),
         entityType,
         entityId,
         checked: s.checked,
@@ -97,12 +98,12 @@ function linkSources(entityType: string, entityId: string, list: SourceRef[]) {
 
 const media = manifest();
 const mediaIdByFile = new Map<string, string>();
-function linkMedia(entityType: "region" | "destination" | "attraction" | "activity", entityId: string, key: string, altBase: string) {
+async function linkMedia(entityType: "region" | "destination" | "attraction" | "activity", entityId: string, key: string, altBase: string) {
   const entries = media.get(key) ?? [];
-  entries.forEach((e, i) => {
+  for (const [i, e] of entries.entries()) {
     let mediaId = mediaIdByFile.get(e.file);
     if (!mediaId) {
-      mediaId = db
+      mediaId = (await db
         .insert(t.media)
         .values({
           src: e.file,
@@ -117,45 +118,45 @@ function linkMedia(entityType: "region" | "destination" | "attraction" | "activi
           representative: false,
         })
         .returning({ id: t.media.id })
-        .get().id;
+        .get())!.id;
       mediaIdByFile.set(e.file, mediaId);
     }
-    db.insert(t.entityMedia)
+    await db.insert(t.entityMedia)
       .values({ entityType, entityId, mediaId, role: i === 0 ? "hero" : "gallery", sort: i })
       .run();
-  });
+  }
 }
 
 async function main() {
   const started = Date.now();
   const bundles = await loadBundles();
 
-  db.transaction(() => {
+  await (async () => {
     /* Taxonomy */
     let sort = 0;
     for (const [slug, name] of Object.entries(CATEGORY_LABELS))
-      db.insert(t.activityCategories).values({ slug, name, kind: "category", sort: sort++ }).run();
+      await db.insert(t.activityCategories).values({ slug, name, kind: "category", sort: sort++ }).run();
     for (const [slug, name] of Object.entries(THEME_LABELS))
-      db.insert(t.activityCategories).values({ slug, name, kind: "theme", sort: sort++ }).run();
-    const catId = new Map(db.select().from(t.activityCategories).all().map((c) => [c.slug, c.id]));
+      await db.insert(t.activityCategories).values({ slug, name, kind: "theme", sort: sort++ }).run();
+    const catId = new Map((await db.select().from(t.activityCategories).all()).map((c) => [c.slug, c.id]));
 
     /* Regions */
     const regionId = new Map<string, string>();
-    regions.forEach((r, i) => {
-      const row = db
+    for (const [i, r] of regions.entries()) {
+      const row = (await db
         .insert(t.regions)
         .values({ ...r, sort: i })
         .returning({ id: t.regions.id })
-        .get();
+        .get())!;
       regionId.set(r.slug, row.id);
-      linkMedia("region", row.id, `region:${r.slug}`, r.name);
-    });
+      await linkMedia("region", row.id, `region:${r.slug}`, r.name);
+    }
 
     /* Destinations */
     const destId = new Map<string, string>();
     const allDests = bundles.flatMap((b) => b.destinations);
     for (const d of allDests) {
-      const row = db
+      const row = (await db
         .insert(t.destinations)
         .values({
           slug: d.slug,
@@ -193,17 +194,17 @@ async function main() {
           updatedBy: "seed",
         })
         .returning({ id: t.destinations.id })
-        .get();
+        .get())!;
       destId.set(d.slug, row.id);
-      linkSources("destination", row.id, d.sources);
-      linkMedia("destination", row.id, `destination:${d.slug}`, d.name);
+      await linkSources("destination", row.id, d.sources);
+      await linkMedia("destination", row.id, `destination:${d.slug}`, d.name);
     }
     for (const d of allDests) {
       if (d.parentSlug && destId.has(d.parentSlug))
-        db.update(t.destinations).set({ parentId: destId.get(d.parentSlug)! }).where(eq(t.destinations.id, destId.get(d.slug)!)).run();
+        await db.update(t.destinations).set({ parentId: destId.get(d.parentSlug)! }).where(eq(t.destinations.id, destId.get(d.slug)!)).run();
       for (const n of d.nearby) {
         if (!destId.has(n.slug) || n.slug === d.slug) continue;
-        db.insert(t.destinationRelationships)
+        await db.insert(t.destinationRelationships)
           .values({ fromId: destId.get(d.slug)!, toId: destId.get(n.slug)!, distanceKm: Math.round(n.distanceKm), travel: n.travel })
           .onConflictDoNothing()
           .run();
@@ -214,7 +215,7 @@ async function main() {
     const attrId = new Map<string, string>();
     for (const a of bundles.flatMap((b) => b.attractions)) {
       if (!destId.has(a.destinationSlug)) continue;
-      const row = db
+      const row = (await db
         .insert(t.attractions)
         .values({
           slug: a.slug,
@@ -243,10 +244,10 @@ async function main() {
           updatedBy: "seed",
         })
         .returning({ id: t.attractions.id })
-        .get();
+        .get())!;
       attrId.set(a.slug, row.id);
-      linkSources("attraction", row.id, a.sources);
-      linkMedia("attraction", row.id, `attraction:${a.slug}`, a.name);
+      await linkSources("attraction", row.id, a.sources);
+      await linkMedia("attraction", row.id, `attraction:${a.slug}`, a.name);
     }
 
     /* Activities */
@@ -254,7 +255,7 @@ async function main() {
     const allActs = bundles.flatMap((b) => b.activities);
     for (const a of allActs) {
       if (!destId.has(a.destinationSlug)) continue;
-      const row = db
+      const row = (await db
         .insert(t.activities)
         .values({
           slug: a.slug,
@@ -294,13 +295,13 @@ async function main() {
           updatedBy: "seed",
         })
         .returning({ id: t.activities.id })
-        .get();
+        .get())!;
       actId.set(a.slug, row.id);
       for (const c of new Set([...a.categories, ...a.themes])) {
         const id = catId.get(c);
-        if (id) db.insert(t.activityCategoryLinks).values({ activityId: row.id, categoryId: id }).onConflictDoNothing().run();
+        if (id) await db.insert(t.activityCategoryLinks).values({ activityId: row.id, categoryId: id }).onConflictDoNothing().run();
       }
-      db.insert(t.activityPrices)
+      await db.insert(t.activityPrices)
         .values({
           activityId: row.id,
           minVnd: a.price.minVnd,
@@ -319,8 +320,8 @@ async function main() {
           verifiedAt: a.price.status.startsWith("verified") ? VERIFIED_AT : null,
         })
         .run();
-      linkSources("activity", row.id, a.sources);
-      linkMedia("activity", row.id, `activity:${a.slug}`, a.title);
+      await linkSources("activity", row.id, a.sources);
+      await linkMedia("activity", row.id, `activity:${a.slug}`, a.title);
     }
     for (const a of allActs) {
       const from = actId.get(a.slug);
@@ -331,13 +332,12 @@ async function main() {
       ] as const)
         for (const s of list) {
           const to = actId.get(s);
-          if (to && to !== from) db.insert(t.activityAlternatives).values({ activityId: from, alternativeId: to, type }).onConflictDoNothing().run();
+          if (to && to !== from) await db.insert(t.activityAlternatives).values({ activityId: from, alternativeId: to, type }).onConflictDoNothing().run();
         }
     }
 
     /* Budget categories */
-    budgetCategories.forEach((c, i) =>
-      db
+    for (const [i, c] of budgetCategories.entries()) { await db
         .insert(t.budgetCategories)
         .values({
           slug: c.slug,
@@ -348,12 +348,12 @@ async function main() {
           comfortablePerDay: c.perDay?.[2] ?? null,
           sort: i,
         })
-        .run(),
-    );
+        .run();
+}
 
     /* Settings */
-    db.insert(t.settings).values({ key: "fx", value: DEFAULT_FX, updatedBy: "seed" }).run();
-    db.insert(t.settings)
+    await db.insert(t.settings).values({ key: "fx", value: DEFAULT_FX, updatedBy: "seed" }).run();
+    await db.insert(t.settings)
       .values({ key: "site", value: { name: "Vietnam Atlas", tagline: "Discover More. Experience Vietnam. Plan Together." } })
       .run();
     // Editorial imagery for the homepage (hero + discovery themes), editable in Admin → Settings.
@@ -363,10 +363,10 @@ async function main() {
     };
     const themes: Record<string, unknown> = {};
     for (const k of media.keys()) if (k.startsWith("theme:")) themes[k.slice(6)] = ref(k);
-    db.insert(t.settings).values({ key: "site_media", value: { hero: ref("site:hero"), heroAlt: ref("site:hero", 1), themes } }).run();
+    await db.insert(t.settings).values({ key: "site_media", value: { hero: ref("site:hero"), heroAlt: ref("site:hero", 1), themes } }).run();
 
     console.log(`✓ Catalogue: ${destId.size} destinations, ${attrId.size} attractions, ${actId.size} activities, ${sourceCache.size} sources, ${mediaIdByFile.size} images`);
-  });
+  })();
 
   /* Guide, checklists, networking (optional files written by content authors) */
   const guide = await optionalImport<{ guideSections: import("../../content/guide-types").GuideSectionSeed[] }>("src/content/guide.ts");
@@ -379,15 +379,15 @@ async function main() {
     professionalEvents: import("../../content/guide-types").ProfessionalEventSeed[];
   }>("src/content/networking.ts");
 
-  db.transaction(() => {
-    guide?.guideSections.forEach((s, i) => {
-      const sec = db
+  await (async () => {
+    for (const [i, s] of (guide?.guideSections ?? []).entries()) {
+      const sec = (await db
         .insert(t.guideSections)
         .values({ slug: s.slug, letter: s.letter, title: s.title, summary: s.summary, icon: s.icon, sort: i })
         .returning({ id: t.guideSections.id })
-        .get();
-      s.articles.forEach((a, j) => {
-        const row = db
+        .get())!;
+      for (const [j, a] of s.articles.entries()) {
+        const row = (await db
           .insert(t.travelGuides)
           .values({
             sectionId: sec.id,
@@ -402,21 +402,21 @@ async function main() {
             sort: j,
           })
           .returning({ id: t.travelGuides.id })
-          .get();
-        linkSources("guide", row.id, a.sources);
-      });
-    });
+          .get())!;
+        await linkSources("guide", row.id, a.sources);
+      }
+    }
     let k = 0;
     for (const [list, items] of [
       ["preparation", checklists?.preparationChecklist ?? []],
       ["packing", checklists?.packingChecklist ?? []],
     ] as const)
       for (const it of items)
-        db.insert(t.preparationChecklists)
+        await db.insert(t.preparationChecklists)
           .values({ list, group: it.group, label: it.label, detail: it.detail, dueDaysBefore: it.dueDaysBefore, sort: k++ })
           .run();
     for (const c of networking?.communities ?? []) {
-      const row = db
+      const row = (await db
         .insert(t.eventOrganisers)
         .values({
           slug: c.slug,
@@ -432,11 +432,11 @@ async function main() {
           status: c.status,
         })
         .returning({ id: t.eventOrganisers.id })
-        .get();
-      linkSources("organiser", row.id, c.sources);
+        .get())!;
+      await linkSources("organiser", row.id, c.sources);
     }
     for (const e of networking?.professionalEvents ?? []) {
-      const row = db
+      const row = (await db
         .insert(t.professionalEvents)
         .values({
           slug: e.slug,
@@ -453,13 +453,13 @@ async function main() {
           lastVerified: e.lastVerified,
         })
         .returning({ id: t.professionalEvents.id })
-        .get();
-      linkSources("event", row.id, e.sources);
+        .get())!;
+      await linkSources("event", row.id, e.sources);
     }
     console.log(
       `✓ Guide: ${guide?.guideSections.length ?? 0} sections · checklists: ${k} items · communities: ${networking?.communities.length ?? 0} · events: ${networking?.professionalEvents.length ?? 0}`,
     );
-  });
+  })();
 
   /* Users & demo workspace */
   // Never fall back to a published password: generate strong ones unless the operator supplies them.
@@ -476,17 +476,17 @@ async function main() {
   // The demo trip is a real group's private workspace: its invite code must not be guessable.
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   const demoInviteCode = (process.env.DEMO_INVITE_CODE ?? Array.from(randomBytes(8), (b) => alphabet[b % alphabet.length]).join("")).toUpperCase();
-  db.transaction(() => {
-    const admin = db
+  await (async () => {
+    const admin = (await db
       .insert(t.users)
       .values({ email: "admin@atlas.local", passwordHash: hashPasswordSync(adminPassword), displayName: "Atlas Admin", role: "super_admin", isGuest: false, avatarColor: "#173F35" })
       .returning({ id: t.users.id })
-      .get();
-    db.insert(t.users)
+      .get())!;
+    await db.insert(t.users)
       .values({ email: "editor@atlas.local", passwordHash: hashPasswordSync(editorPassword), displayName: "Content Editor", role: "content_editor", isGuest: false, avatarColor: "#C96F50" })
       .run();
 
-    const trip = db
+    const trip = (await db
       .insert(t.trips)
       .values({
         name: demoTrip.name,
@@ -504,9 +504,9 @@ async function main() {
         settings: demoTrip.settings,
       })
       .returning()
-      .get();
-    demoTrip.members.forEach((m, i) => {
-      const row = db
+      .get())!;
+    for (const [i, m] of demoTrip.members.entries()) {
+      const row = (await db
         .insert(t.tripMembers)
         .values({
           tripId: trip.id,
@@ -521,27 +521,27 @@ async function main() {
           sort: i,
         })
         .returning({ id: t.tripMembers.id })
-        .get();
-      db.insert(t.tripPreferences).values({ memberId: row.id }).run();
-    });
+        .get())!;
+      await db.insert(t.tripPreferences).values({ memberId: row.id }).run();
+    }
     // Itinerary days
     const dates: string[] = [];
     for (let d = new Date(`${trip.startDate}T00:00:00Z`); d <= new Date(`${trip.endDate}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + 1))
       dates.push(d.toISOString().slice(0, 10));
-    const dest = (slug: string) => db.select({ id: t.destinations.id }).from(t.destinations).where(eq(t.destinations.slug, slug)).get()?.id ?? null;
+    const dest = async (slug: string) => (await db.select({ id: t.destinations.id }).from(t.destinations).where(eq(t.destinations.slug, slug)).get())?.id ?? null;
     const dayIds = new Map<string, string>();
     for (const date of dates) {
-      const destinationId = date === trip.startDate ? dest("phu-quoc") : date === trip.endDate ? dest("hanoi") : null;
-      const row = db.insert(t.itineraryDays).values({ tripId: trip.id, date, destinationId }).returning({ id: t.itineraryDays.id }).get();
+      const destinationId = date === trip.startDate ? await dest("phu-quoc") : date === trip.endDate ? await dest("hanoi") : null;
+      const row = (await db.insert(t.itineraryDays).values({ tripId: trip.id, date, destinationId }).returning({ id: t.itineraryDays.id }).get())!;
       dayIds.set(date, row.id);
     }
     // Fixed international flights
     const [outbound, inbound] = demoTrip.fixedFlights;
-    const legOut = db
+    const legOut = (await db
       .insert(t.transportLegs)
       .values({
         tripId: trip.id,
-        toDestinationId: dest(outbound.toDestination ?? ""),
+        toDestinationId: await dest(outbound.toDestination ?? ""),
         fromLabel: outbound.fromLabel,
         toLabel: outbound.toLabel,
         mode: "flight",
@@ -554,12 +554,12 @@ async function main() {
         notes: outbound.notes,
       })
       .returning({ id: t.transportLegs.id })
-      .get();
-    const legIn = db
+      .get())!;
+    const legIn = (await db
       .insert(t.transportLegs)
       .values({
         tripId: trip.id,
-        fromDestinationId: dest(inbound.fromDestination ?? ""),
+        fromDestinationId: await dest(inbound.fromDestination ?? ""),
         fromLabel: inbound.fromLabel,
         toLabel: inbound.toLabel,
         mode: "flight",
@@ -572,15 +572,15 @@ async function main() {
         notes: inbound.notes,
       })
       .returning({ id: t.transportLegs.id })
-      .get();
-    db.insert(t.itineraryItems)
+      .get())!;
+    await db.insert(t.itineraryItems)
       .values([
         { tripId: trip.id, dayId: dayIds.get(trip.startDate)!, sort: 0, type: "transport", transportLegId: legOut.id, title: "Land at Phu Quoc (PQC): flight from Hyderabad", startTime: "15:30", durationMin: 75, notes: "Booked. Allow time for immigration and the transfer to your stay." },
         { tripId: trip.id, dayId: dayIds.get(trip.endDate)!, sort: 0, type: "transport", transportLegId: legIn.id, title: "Transfer to Noi Bai & fly Hanoi → Hyderabad (12:20)", startTime: "09:15", durationMin: 185, notes: "Booked. Leave central Hanoi about 3 hours before departure." },
       ])
       .run();
     console.log(`✓ Demo trip "${trip.name}" with ${demoTrip.members.length} seats: invite code ${trip.inviteCode}`);
-  });
+  })();
 
   console.log(`\nSeed complete in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
   if (generated.length) {
@@ -591,7 +591,9 @@ async function main() {
   } else console.log("Staff passwords taken from SEED_ADMIN_PASSWORD / SEED_EDITOR_PASSWORD.");
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exitCode = 1;
+  })
+  .finally(() => client.end());

@@ -38,9 +38,9 @@ const SMARTER = [
   { title: "Local etiquette", text: "Temples, photography, alcohol, drones and protected wildlife.", icon: HandHeart, href: "/guide/local-rules-and-etiquette" },
 ];
 
-export default function HomePage() {
-  const { destinations, activities, regions } = getCatalog();
-  const media = getSetting<{ hero: SiteImage; themes: Record<string, SiteImage> }>("site_media", { hero: null, themes: {} });
+export default async function HomePage() {
+  const { destinations, activities, regions } = await getCatalog();
+  const media = await getSetting<{ hero: SiteImage; themes: Record<string, SiteImage> }>("site_media", { hero: null, themes: {} });
   const bySlug = new Map(destinations.map((d) => [d.slug, d]));
   const featuredDest = FEATURED_DESTINATIONS.map((s) => bySlug.get(s)).filter((d): d is NonNullable<typeof d> => !!d);
   const signature = SIGNATURE.map(({ dest, kw }) => activities.find((a) => a.destinationSlug === dest && kw.some((k) => a.slug.includes(k))))

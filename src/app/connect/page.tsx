@@ -19,12 +19,12 @@ export const metadata: Metadata = {
 const CITY: Record<string, string> = { hanoi: "Hanoi", "ho-chi-minh-city": "Ho Chi Minh City", "da-nang": "Da Nang", nationwide: "Nationwide" };
 
 export default async function ConnectPage() {
-  const orgs = db.select().from(t.eventOrganisers).where(eq(t.eventOrganisers.publishStatus, "published")).orderBy(asc(t.eventOrganisers.name)).all();
-  const events = db.select().from(t.professionalEvents).where(eq(t.professionalEvents.publishStatus, "published")).orderBy(asc(t.professionalEvents.startDate)).all();
-  const evSources = sourcesFor("event", events.map((e) => e.id));
+  const orgs = await db.select().from(t.eventOrganisers).where(eq(t.eventOrganisers.publishStatus, "published")).orderBy(asc(t.eventOrganisers.name)).all();
+  const events = await db.select().from(t.professionalEvents).where(eq(t.professionalEvents.publishStatus, "published")).orderBy(asc(t.professionalEvents.startDate)).all();
+  const evSources = await sourcesFor("event", events.map((e) => e.id));
   const user = await getCurrentUser();
-  const profile = user ? db.select().from(t.userProfiles).where(eq(t.userProfiles.userId, user.id)).get() : null;
-  const contacts = user ? db.select().from(t.networkingContacts).where(eq(t.networkingContacts.userId, user.id)).orderBy(asc(t.networkingContacts.followUpDate)).all() : [];
+  const profile = user ? await db.select().from(t.userProfiles).where(eq(t.userProfiles.userId, user.id)).get() : null;
+  const contacts = user ? await db.select().from(t.networkingContacts).where(eq(t.networkingContacts.userId, user.id)).orderBy(asc(t.networkingContacts.followUpDate)).all() : [];
   const today = new Date().toISOString().slice(0, 10);
   return (
     <div className="container-x pt-10">

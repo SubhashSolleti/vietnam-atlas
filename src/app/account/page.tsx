@@ -17,7 +17,7 @@ export default async function AccountPage() {
         <div className="mt-6 flex gap-2"><ButtonLink href="/login">Sign in</ButtonLink><ButtonLink href="/register" variant="outline">Create account</ButtonLink></div>
       </div>
     );
-  const trips = myTrips(user.id);
+  const trips = await myTrips(user.id);
   return (
     <div className="container-x max-w-3xl pt-12">
       <h1 className="text-4xl">Account &amp; privacy</h1>

@@ -12,8 +12,8 @@ import { requireAdminPage } from "@/lib/auth";
 export default async function AdminAttractions({ searchParams }: { searchParams: Promise<{ q?: string; status?: string; destination?: string }> }) {
   await requireAdminPage(undefined, "/admin/attractions");
   const sp = await searchParams;
-  const dests = db.select({ id: t.destinations.id, name: t.destinations.name }).from(t.destinations).orderBy(asc(t.destinations.name)).all();
-  const rows = db.select({ a: t.attractions, d: t.destinations.name }).from(t.attractions).innerJoin(t.destinations, eq(t.destinations.id, t.attractions.destinationId)).orderBy(asc(t.destinations.name), asc(t.attractions.name)).all()
+  const dests = await db.select({ id: t.destinations.id, name: t.destinations.name }).from(t.destinations).orderBy(asc(t.destinations.name)).all();
+  const rows = (await db.select({ a: t.attractions, d: t.destinations.name }).from(t.attractions).innerJoin(t.destinations, eq(t.destinations.id, t.attractions.destinationId)).orderBy(asc(t.destinations.name), asc(t.attractions.name)).all())
     .filter(({ a, d }) => (!sp.status || a.status === sp.status) && (!sp.destination || a.destinationId === sp.destination) && (!sp.q || normalise(`${a.name} ${d}`).includes(normalise(sp.q))));
   return (
     <div>

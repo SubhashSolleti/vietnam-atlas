@@ -6,12 +6,12 @@ import { DataStatusBadge } from "@/components/catalog/meta";
 
 export const metadata: Metadata = { title: "Data sources & accuracy", alternates: { canonical: "/sources" } };
 
-export default function SourcesPage() {
-  const byStatus = db.select({ status: t.sourceVerifications.status, n: sql<number>`count(*)` }).from(t.sourceVerifications).groupBy(t.sourceVerifications.status).all();
-  const priceStatus = db.select({ status: t.activityPrices.status, n: sql<number>`count(*)` }).from(t.activityPrices).groupBy(t.activityPrices.status).all();
-  const publishers = db.select({ publisher: t.sources.publisher, n: sql<number>`count(*)` }).from(t.sources).groupBy(t.sources.publisher).orderBy(sql`count(*) desc`).limit(25).all();
-  const media = db.select({ license: t.media.license, n: sql<number>`count(*)` }).from(t.media).groupBy(t.media.license).all();
-  const credits = db
+export default async function SourcesPage() {
+  const byStatus = await db.select({ status: t.sourceVerifications.status, n: sql<number>`count(*)::int` }).from(t.sourceVerifications).groupBy(t.sourceVerifications.status).all();
+  const priceStatus = await db.select({ status: t.activityPrices.status, n: sql<number>`count(*)::int` }).from(t.activityPrices).groupBy(t.activityPrices.status).all();
+  const publishers = await db.select({ publisher: t.sources.publisher, n: sql<number>`count(*)::int` }).from(t.sources).groupBy(t.sources.publisher).orderBy(sql`count(*) desc`).limit(25).all();
+  const media = await db.select({ license: t.media.license, n: sql<number>`count(*)::int` }).from(t.media).groupBy(t.media.license).all();
+  const credits = await db
     .select({ id: t.media.id, title: t.media.title, alt: t.media.alt, author: t.media.author, license: t.media.license, licenseUrl: t.media.licenseUrl, sourceUrl: t.media.sourceUrl })
     .from(t.media)
     .orderBy(t.media.title)

@@ -14,3 +14,7 @@ data/media-review/
 data/uploads/
 data/e2e-uploads/
 data/initial-credentials.txt
+.vercel
+.env*.local
+.env
+.env*

@@ -8,13 +8,13 @@ import type { ImageRef } from "@/services/media";
 
 export async function generateMetadata({ params }: { params: Promise<{ region: string }> }): Promise<Metadata> {
   const { region } = await params;
-  const r = getCatalog().regions.find((x) => x.slug === region);
+  const r = (await getCatalog()).regions.find((x) => x.slug === region);
   return r ? { title: `${r.name}destinations & experiences`, description: r.summary, alternates: { canonical: `/explore/${r.slug}` } } : { title: "Region not found" };
 }
 
 export default async function RegionPage({ params }: { params: Promise<{ region: string }> }) {
   const { region } = await params;
-  const { regions, destinations, activities } = getCatalog();
+  const { regions, destinations, activities } = await getCatalog();
   const r = regions.find((x) => x.slug === region);
   if (!r) notFound();
   const dests = destinations.filter((d) => d.regionSlug === r.slug && !d.parentSlug).sort((a, b) => b.popularity - a.popularity);

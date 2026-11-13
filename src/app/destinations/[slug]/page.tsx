@@ -19,7 +19,7 @@ import { AddDestinationToTrip } from "./add-to-trip";
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const { slug } = await params;
-  const data = getDestinationBySlug(slug);
+  const data = await getDestinationBySlug(slug);
   if (!data) return { title: "Destination not found" };
   const d = data.destination;
   const hero = data.images[0];
@@ -48,7 +48,7 @@ const SPEND = ["", "Very affordable", "Affordable", "Mid-range", "Pricier"];
 
 export default async function DestinationPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const data = getDestinationBySlug(slug);
+  const data = await getDestinationBySlug(slug);
   if (!data) notFound();
   const { destination: d, region, parent, children, attractions, images, nearby, activities, sources } = data;
   const free = activities.filter((a) => a.priceTier === "free");

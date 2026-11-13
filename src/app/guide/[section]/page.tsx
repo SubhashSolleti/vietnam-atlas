@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge";
 
 export async function generateMetadata({ params }: { params: Promise<{ section: string }> }): Promise<Metadata> {
   const { section } = await params;
-  const s = guideSection(section);
+  const s = await guideSection(section);
   return s ? { title: `${s.section.title}Vietnam travel guide`, description: s.section.summary, alternates: { canonical: `/guide/${section}` } } : { title: "Guide" };
 }
 
@@ -24,15 +24,15 @@ const KIND = { official_requirement: { label: "Official requirement", tone: "goo
 
 export default async function GuideSectionPage({ params }: { params: Promise<{ section: string }> }) {
   const { section: slug } = await params;
-  const data = guideSection(slug);
+  const data = await guideSection(slug);
   if (!data) notFound();
   const { section, articles } = data;
-  const all = guideSections();
+  const all = await guideSections();
   const user = await getCurrentUser();
   const isPacking = slug.includes("packing");
   const isPrep = slug.includes("preparation");
   const active = await resolveActiveTrip(user?.id);
-  const list = isPacking ? checklistItems("packing") : isPrep ? checklistItems("preparation") : [];
+  const list = isPacking ? await checklistItems("packing") : isPrep ? await checklistItems("preparation") : [];
   return (
     <div className="container-x pt-10">
       <div className="grid gap-10 lg:grid-cols-[240px_1fr]">
@@ -61,7 +61,7 @@ export default async function GuideSectionPage({ params }: { params: Promise<{ s
           {list.length > 0 && (
             <section className="mt-10" aria-label="Checklist">
               <h2 className="mb-4 text-2xl">{isPacking ? "Your packing checklist" : "Your preparation checklist"}</h2>
-              <Checklist items={list.map((i) => ({ id: i.id, group: i.group, label: i.label, detail: i.detail, dueDaysBefore: i.dueDaysBefore }))} done={checklistDone(user?.id)} departure={active ? active.trip.startDate : undefined} />
+              <Checklist items={list.map((i) => ({ id: i.id, group: i.group, label: i.label, detail: i.detail, dueDaysBefore: i.dueDaysBefore }))} done={await checklistDone(user?.id)} departure={active ? active.trip.startDate : undefined} />
             </section>
           )}
           {articles.map((a) => (

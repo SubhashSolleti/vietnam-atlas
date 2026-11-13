@@ -48,16 +48,16 @@ async function setSessionCookie(token: string) {
 export async function createSession(userId: string) {
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + SESSION_DAYS * 86400_000).toISOString();
-  db.insert(t.sessions).values({ id: hashToken(token), userId, expiresAt }).run();
+  await db.insert(t.sessions).values({ id: hashToken(token), userId, expiresAt }).run();
   await setSessionCookie(token);
   // Opportunistic cleanup of expired sessions.
-  db.delete(t.sessions).where(lt(t.sessions.expiresAt, new Date().toISOString())).run();
+  await db.delete(t.sessions).where(lt(t.sessions.expiresAt, new Date().toISOString())).run();
 }
 
 export async function destroySession() {
   const jar = await cookies();
   const token = jar.get(SESSION_COOKIE)?.value;
-  if (token) db.delete(t.sessions).where(eq(t.sessions.id, hashToken(token))).run();
+  if (token) await db.delete(t.sessions).where(eq(t.sessions.id, hashToken(token))).run();
   jar.delete(SESSION_COOKIE);
 }
 
@@ -67,7 +67,7 @@ export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
   const jar = await cookies();
   const token = jar.get(SESSION_COOKIE)?.value;
   if (!token) return null;
-  const row = db
+  const row = await db
     .select({ user: t.users })
     .from(t.sessions)
     .innerJoin(t.users, eq(t.users.id, t.sessions.userId))
@@ -90,7 +90,7 @@ export async function requireUser(): Promise<CurrentUser> {
   // Guest profiles are cheap to create, so cap how fast one client (or, without a trusted proxy, everyone) can mint them.
   if (!(await limitClient("guest", 30, 10 * 60_000))) throw new UserError("Too many new visitors from your network right now. Please try again in a few minutes.");
   const guestNo = Math.floor(1000 + Math.random() * 9000);
-  const user = db
+  const user = (await db
     .insert(t.users)
     .values({
       displayName: `Guest ${guestNo}`,
@@ -99,7 +99,7 @@ export async function requireUser(): Promise<CurrentUser> {
       avatarColor: GUEST_COLORS[guestNo % GUEST_COLORS.length]!,
     })
     .returning()
-    .get();
+    .get())!;
   await createSession(user.id);
   return user;
 }
@@ -139,7 +139,7 @@ export function isAdmin(user: Pick<CurrentUser, "role"> | null | undefined) {
  */
 export async function limitClient(scope: string, limit: number, windowMs: number) {
   const key = await clientKey(scope);
-  return rateLimit(key, key.endsWith(":direct") ? limit * 10 : limit, windowMs).ok;
+  return (await rateLimit(key, key.endsWith(":direct") ? limit * 10 : limit, windowMs)).ok;
 }
 
 export async function clientKey(scope: string) {
@@ -154,27 +154,27 @@ export async function clientKey(scope: string) {
 
 const DEVICE_COOKIE = "atlas_device";
 
-function deviceSecret() {
-  const row = db.select().from(t.settings).where(eq(t.settings.key, "device_secret")).get();
+async function deviceSecret() {
+  const row = await db.select().from(t.settings).where(eq(t.settings.key, "device_secret")).get();
   if (row?.value) return String(row.value);
   const secret = randomBytes(32).toString("hex");
-  db.insert(t.settings).values({ key: "device_secret", value: secret }).onConflictDoNothing().run();
-  return String(db.select().from(t.settings).where(eq(t.settings.key, "device_secret")).get()!.value);
+  await db.insert(t.settings).values({ key: "device_secret", value: secret }).onConflictDoNothing().run();
+  return String((await db.select().from(t.settings).where(eq(t.settings.key, "device_secret")).get())!.value);
 }
 
-const deviceTag = (email: string) => createHash("sha256").update(`${deviceSecret()}:${email.toLowerCase()}`).digest("base64url").slice(0, 32);
+const deviceTag = async (email: string) => createHash("sha256").update(`${await deviceSecret()}:${email.toLowerCase()}`).digest("base64url").slice(0, 32);
 
 /** True when this browser has signed in to `email` before (a signed cookie set on success). */
 export async function isKnownDevice(email: string) {
   const v = (await cookies()).get(DEVICE_COOKIE)?.value ?? "";
-  return v.split(".").includes(deviceTag(email));
+  return v.split(".").includes(await deviceTag(email));
 }
 
 /** Remember this browser for `email` (kept alongside up to four other accounts). */
 export async function rememberDevice(email: string) {
   const jar = await cookies();
   const tags = new Set((jar.get(DEVICE_COOKIE)?.value ?? "").split(".").filter(Boolean));
-  tags.add(deviceTag(email));
+  tags.add(await deviceTag(email));
   jar.set(DEVICE_COOKIE, [...tags].slice(-5).join("."), {
     httpOnly: true,
     sameSite: "lax",

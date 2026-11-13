@@ -10,8 +10,8 @@ export const metadata: Metadata = {
   alternates: { canonical: "/guide" },
 };
 
-export default function GuideIndex() {
-  const sections = guideSections();
+export default async function GuideIndex() {
+  const sections = await guideSections();
   return (
     <div className="container-x pt-10">
       <div className="grid gap-10 lg:grid-cols-12">

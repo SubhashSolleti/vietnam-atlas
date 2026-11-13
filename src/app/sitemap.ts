@@ -7,10 +7,10 @@ import { eq } from "drizzle-orm";
 // Built from the database on request, so a production build never depends on database state.
 export const dynamic = "force-dynamic";
 
-export default function sitemap(): MetadataRoute.Sitemap {
-  const { destinations, activities, regions } = getCatalog();
-  const attractions = db.select({ slug: t.attractions.slug, updatedAt: t.attractions.updatedAt }).from(t.attractions).where(eq(t.attractions.status, "published")).all();
-  const guide = db.select({ slug: t.guideSections.slug }).from(t.guideSections).all();
+export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
+  const { destinations, activities, regions } = await getCatalog();
+  const attractions = await db.select({ slug: t.attractions.slug, updatedAt: t.attractions.updatedAt }).from(t.attractions).where(eq(t.attractions.status, "published")).all();
+  const guide = await db.select({ slug: t.guideSections.slug }).from(t.guideSections).all();
   const staticPaths = ["/", "/explore", "/destinations", "/experiences", "/guide", "/map", "/connect", "/about", "/sources", "/privacy", "/terms", "/legal", "/contact"];
   return [
     ...staticPaths.map((p) => ({ url: absoluteUrl(p), changeFrequency: "weekly" as const, priority: p === "/" ? 1 : 0.7 })),

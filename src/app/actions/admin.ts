@@ -1,7 +1,5 @@
 "use server";
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { revalidatePath } from "next/cache";
 import { and, eq } from "drizzle-orm";
 import sharp from "sharp";
@@ -9,7 +7,6 @@ import { z } from "zod";
 import { db, t } from "@/db/client";
 import { run, UserError } from "@/lib/action";
 import { ADMIN_ROLES, requireRole, type CurrentUser } from "@/lib/auth";
-import { uploadsDir } from "@/lib/uploads";
 import { slugify } from "@/lib/utils";
 import { invalidateCatalog } from "@/services/catalog";
 import { setSetting } from "@/services/settings";
@@ -18,8 +15,8 @@ const STATUSES = ["verified_official", "verified_provider", "reference", "estima
 const lines = z.string().transform((s) => s.split("\n").map((x) => x.trim()).filter(Boolean));
 const months = z.string().regex(/^[0-3]{12}$/, "Months must be 12 digits from 0 (avoid) to 3 (excellent)");
 
-function audit(user: CurrentUser, action: string, entityType: string, entityId: string | null, summary: string, diff?: Record<string, unknown>) {
-  db.insert(t.adminAuditLogs).values({ actorId: user.id, actorName: user.displayName, action, entityType, entityId, summary, diff: diff ?? null }).run();
+async function audit(user: CurrentUser, action: string, entityType: string, entityId: string | null, summary: string, diff?: Record<string, unknown>) {
+  await db.insert(t.adminAuditLogs).values({ actorId: user.id, actorName: user.displayName, action, entityType, entityId, summary, diff: diff ?? null }).run();
 }
 
 function afterContentChange() {
@@ -117,42 +114,42 @@ export async function saveActivity(id: string | null, input: z.input<typeof acti
     const v = activitySchema.parse(input);
     const slug = slugify(v.slug || v.title);
     if (!slug) throw new UserError("Slug is required.");
-    const dupe = db.select({ id: t.activities.id }).from(t.activities).where(eq(t.activities.slug, slug)).get();
+    const dupe = await db.select({ id: t.activities.id }).from(t.activities).where(eq(t.activities.slug, slug)).get();
     if (dupe && dupe.id !== id) throw new UserError(`Another activity already uses the slug “${slug}”.`);
-    const sourceCount = id ? db.select().from(t.sourceVerifications).where(and(eq(t.sourceVerifications.entityType, "activity"), eq(t.sourceVerifications.entityId, id))).all().length : 0;
+    const sourceCount = id ? (await db.select().from(t.sourceVerifications).where(and(eq(t.sourceVerifications.entityType, "activity"), eq(t.sourceVerifications.entityId, id))).all()).length : 0;
     if (v.status === "published") {
       const problems = publishProblems(v, sourceCount);
       if (problems.length) throw new UserError(`Can't publish yet: ${problems.join(" ")}`);
     }
     const { price, categories, ...fields } = v;
     const values = { ...fields, slug, attractionId: v.attractionId ?? null, minAge: v.minAge || null, minParticipants: v.minParticipants || null, cancellation: v.cancellation || null, updatedBy: user.displayName };
-    const before = id ? db.select().from(t.activities).where(eq(t.activities.id, id)).get() : null;
-    const activityId = db.transaction((tx) => {
+    const before = id ? await db.select().from(t.activities).where(eq(t.activities.id, id)).get() : null;
+    const activityId = await db.transaction(async (tx) => {
       let aid = id;
       if (aid) {
         if (!before) throw new UserError("Activity not found.");
-        tx.update(t.activities).set(values).where(eq(t.activities.id, aid)).run();
+        await tx.update(t.activities).set(values).where(eq(t.activities.id, aid)).run();
       } else {
-        aid = tx.insert(t.activities).values(values).returning({ id: t.activities.id }).get().id;
+        aid = (await tx.insert(t.activities).values(values).returning({ id: t.activities.id }).get())!.id;
       }
-      tx.delete(t.activityCategoryLinks).where(eq(t.activityCategoryLinks.activityId, aid)).run();
-      const cats = tx.select().from(t.activityCategories).all();
+      await tx.delete(t.activityCategoryLinks).where(eq(t.activityCategoryLinks.activityId, aid)).run();
+      const cats = await tx.select().from(t.activityCategories).all();
       for (const c of categories) {
         const cat = cats.find((x) => x.slug === c);
-        if (cat) tx.insert(t.activityCategoryLinks).values({ activityId: aid, categoryId: cat.id }).run();
+        if (cat) await tx.insert(t.activityCategoryLinks).values({ activityId: aid, categoryId: cat.id }).run();
       }
-      const current = tx.select().from(t.activityPrices).where(and(eq(t.activityPrices.activityId, aid), eq(t.activityPrices.isCurrent, true))).get();
+      const current = await tx.select().from(t.activityPrices).where(and(eq(t.activityPrices.activityId, aid), eq(t.activityPrices.isCurrent, true))).get();
       const changed = !current || current.minVnd !== price.minVnd || current.maxVnd !== price.maxVnd || current.unit !== price.unit || current.status !== price.status || current.basis !== price.basis;
       if (changed) {
         // Keep price history: retire the old record and add a new current one.
-        tx.update(t.activityPrices).set({ isCurrent: false }).where(eq(t.activityPrices.activityId, aid)).run();
-        tx.insert(t.activityPrices).values({ activityId: aid, ...price, validity: price.validity || null, verifiedAt: new Date().toISOString().slice(0, 10) }).run();
+        await tx.update(t.activityPrices).set({ isCurrent: false }).where(eq(t.activityPrices.activityId, aid)).run();
+        await tx.insert(t.activityPrices).values({ activityId: aid, ...price, validity: price.validity || null, verifiedAt: new Date().toISOString().slice(0, 10) }).run();
       } else {
-        tx.update(t.activityPrices).set({ includes: price.includes, excludes: price.excludes, extras: price.extras, audience: price.audience, validity: price.validity || null }).where(eq(t.activityPrices.id, current!.id)).run();
+        await tx.update(t.activityPrices).set({ includes: price.includes, excludes: price.excludes, extras: price.extras, audience: price.audience, validity: price.validity || null }).where(eq(t.activityPrices.id, current!.id)).run();
       }
       return aid;
     });
-    audit(user, id ? "update" : "create", "activity", activityId, `${id ? "Updated" : "Created"} activity “${v.title}” (${v.status})`, before ? { statusBefore: before.status, statusAfter: v.status } : undefined);
+    await audit(user, id ? "update" : "create", "activity", activityId, `${id ? "Updated" : "Created"} activity “${v.title}” (${v.status})`, before ? { statusBefore: before.status, statusAfter: v.status } : undefined);
     afterContentChange();
     return { id: activityId, slug };
   });
@@ -165,20 +162,20 @@ export async function setPublishStatus(entityType: "activity" | "destination" | 
     z.enum(["activity", "destination", "attraction"]).parse(entityType);
     z.string().uuid().parse(id);
     const table = entityType === "activity" ? t.activities : entityType === "destination" ? t.destinations : t.attractions;
-    const row = db.select({ id: table.id, status: table.status }).from(table).where(eq(table.id, id)).get();
+    const row = await db.select({ id: table.id, status: table.status }).from(table).where(eq(table.id, id)).get();
     if (!row) throw new UserError("Not found.");
     if (status === "published") {
-      const sources = db.select().from(t.sourceVerifications).where(and(eq(t.sourceVerifications.entityType, entityType), eq(t.sourceVerifications.entityId, id))).all();
+      const sources = await db.select().from(t.sourceVerifications).where(and(eq(t.sourceVerifications.entityType, entityType), eq(t.sourceVerifications.entityId, id))).all();
       if (!sources.length) throw new UserError("Add at least one source before publishing.");
       if (entityType === "activity") {
-        const a = db.select().from(t.activities).where(eq(t.activities.id, id)).get()!;
-        const price = db.select().from(t.activityPrices).where(and(eq(t.activityPrices.activityId, id), eq(t.activityPrices.isCurrent, true))).get();
-        const cats = db.select().from(t.activityCategoryLinks).where(eq(t.activityCategoryLinks.activityId, id)).all();
+        const a = (await db.select().from(t.activities).where(eq(t.activities.id, id)).get())!;
+        const price = await db.select().from(t.activityPrices).where(and(eq(t.activityPrices.activityId, id), eq(t.activityPrices.isCurrent, true))).get();
+        const cats = await db.select().from(t.activityCategoryLinks).where(eq(t.activityCategoryLinks.activityId, id)).all();
         if (!price || !cats.length || a.summary.length < 20 || !a.steps.length) throw new UserError("This activity is incomplete. Open the editor to see what's missing.");
       }
     }
-    db.update(table).set({ status, updatedBy: user.displayName }).where(eq(table.id, id)).run();
-    audit(user, status === "published" ? "publish" : status === "archived" ? "archive" : "unpublish", entityType, id, `Set ${entityType} status ${row.status} → ${status}`);
+    await db.update(table).set({ status, updatedBy: user.displayName }).where(eq(table.id, id)).run();
+    await audit(user, status === "published" ? "publish" : status === "archived" ? "archive" : "unpublish", entityType, id, `Set ${entityType} status ${row.status} → ${status}`);
     afterContentChange();
     return {};
   });
@@ -190,8 +187,8 @@ export async function toggleFeatured(entityType: "activity" | "destination", id:
     z.enum(["activity", "destination"]).parse(entityType);
     z.boolean().parse(featured);
     const table = entityType === "activity" ? t.activities : t.destinations;
-    db.update(table).set({ featured }).where(eq(table.id, id)).run();
-    audit(user, "feature", entityType, id, `${featured ? "Featured" : "Unfeatured"} ${entityType}`);
+    await db.update(table).set({ featured }).where(eq(table.id, id)).run();
+    await audit(user, "feature", entityType, id, `${featured ? "Featured" : "Unfeatured"} ${entityType}`);
     afterContentChange();
     return {};
   });
@@ -253,21 +250,21 @@ export async function saveDestination(id: string | null, input: z.input<typeof d
     const v = destinationSchema.parse(input);
     if (v.daysMax < v.daysMin) throw new UserError("Maximum days must be at least the minimum.");
     const slug = slugify(v.slug || v.name);
-    const dupe = db.select({ id: t.destinations.id }).from(t.destinations).where(eq(t.destinations.slug, slug)).get();
+    const dupe = await db.select({ id: t.destinations.id }).from(t.destinations).where(eq(t.destinations.slug, slug)).get();
     if (dupe && dupe.id !== id) throw new UserError(`Slug “${slug}” is already used.`);
     const food = parseJson<typeof t.destinations.$inferInsert.food>("Food", v.food, (x) => !!x && typeof x === "object" && Array.isArray((x as { dishes?: unknown }).dishes));
     const nightlife = parseJson<typeof t.destinations.$inferInsert.nightlife>("Nightlife", v.nightlife, Array.isArray);
     const practical = parseJson<typeof t.destinations.$inferInsert.practical>("Practical guide", v.practical, (x) => !!x && typeof x === "object" && "howToReach" in (x as object));
     const transportHubs = parseJson<typeof t.destinations.$inferInsert.transportHubs>("Transport hubs", v.transportHubs, Array.isArray);
     if (v.status === "published" && id) {
-      const n = db.select().from(t.sourceVerifications).where(and(eq(t.sourceVerifications.entityType, "destination"), eq(t.sourceVerifications.entityId, id))).all().length;
+      const n = (await db.select().from(t.sourceVerifications).where(and(eq(t.sourceVerifications.entityType, "destination"), eq(t.sourceVerifications.entityId, id))).all()).length;
       if (!n) throw new UserError("Add at least one source before publishing.");
     } else if (v.status === "published" && !id) throw new UserError("Save as a draft first, add sources and images, then publish.");
     const values = { ...v, slug, food, nightlife, practical, transportHubs, localName: v.localName || null, formerProvince: v.formerProvince || null, parentId: v.parentId ?? null, updatedBy: user.displayName };
     let did = id;
-    if (id) db.update(t.destinations).set(values).where(eq(t.destinations.id, id)).run();
-    else did = db.insert(t.destinations).values(values).returning({ id: t.destinations.id }).get().id;
-    audit(user, id ? "update" : "create", "destination", did, `${id ? "Updated" : "Created"} destination “${v.name}” (${v.status})`);
+    if (id) await db.update(t.destinations).set(values).where(eq(t.destinations.id, id)).run();
+    else did = (await db.insert(t.destinations).values(values).returning({ id: t.destinations.id }).get())!.id;
+    await audit(user, id ? "update" : "create", "destination", did, `${id ? "Updated" : "Created"} destination “${v.name}” (${v.status})`);
     afterContentChange();
     return { id: did!, slug };
   });
@@ -307,17 +304,17 @@ export async function saveAttraction(id: string | null, input: z.input<typeof at
     const user = await requireRole(ADMIN_ROLES);
     const v = attractionSchema.parse(input);
     const slug = slugify(v.slug || v.name);
-    const dupe = db.select({ id: t.attractions.id }).from(t.attractions).where(eq(t.attractions.slug, slug)).get();
+    const dupe = await db.select({ id: t.attractions.id }).from(t.attractions).where(eq(t.attractions.slug, slug)).get();
     if (dupe && dupe.id !== id) throw new UserError(`Slug “${slug}” is already used.`);
     if (v.status === "published") {
-      const n = id ? db.select().from(t.sourceVerifications).where(and(eq(t.sourceVerifications.entityType, "attraction"), eq(t.sourceVerifications.entityId, id))).all().length : 0;
+      const n = id ? (await db.select().from(t.sourceVerifications).where(and(eq(t.sourceVerifications.entityType, "attraction"), eq(t.sourceVerifications.entityId, id))).all()).length : 0;
       if (!n) throw new UserError("Add at least one source before publishing (save as draft first).");
     }
     const values = { ...v, slug, localName: v.localName || null, lat: v.lat ?? null, lng: v.lng ?? null, feeMinVnd: v.feeMinVnd ?? null, feeMaxVnd: v.feeMaxVnd ?? null, officialUrl: v.officialUrl ?? null, updatedBy: user.displayName };
     let aid = id;
-    if (id) db.update(t.attractions).set(values).where(eq(t.attractions.id, id)).run();
-    else aid = db.insert(t.attractions).values(values).returning({ id: t.attractions.id }).get().id;
-    audit(user, id ? "update" : "create", "attraction", aid, `${id ? "Updated" : "Created"} attraction “${v.name}”`);
+    if (id) await db.update(t.attractions).set(values).where(eq(t.attractions.id, id)).run();
+    else aid = (await db.insert(t.attractions).values(values).returning({ id: t.attractions.id }).get())!.id;
+    await audit(user, id ? "update" : "create", "attraction", aid, `${id ? "Updated" : "Created"} attraction “${v.name}”`);
     afterContentChange();
     return { id: aid!, slug };
   });
@@ -342,12 +339,12 @@ export async function addSource(input: z.input<typeof sourceSchema>) {
   return run(async () => {
     const user = await requireRole(ADMIN_ROLES);
     const v = sourceSchema.parse(input);
-    let source = db.select().from(t.sources).where(and(eq(t.sources.url, v.url), eq(t.sources.title, v.title))).get();
-    if (!source) source = db.insert(t.sources).values({ title: v.title, url: v.url, publisher: v.publisher, kind: v.kind }).returning().get();
-    db.insert(t.sourceVerifications)
+    let source = await db.select().from(t.sources).where(and(eq(t.sources.url, v.url), eq(t.sources.title, v.title))).get();
+    if (!source) source = (await db.insert(t.sources).values({ title: v.title, url: v.url, publisher: v.publisher, kind: v.kind }).returning().get())!;
+    await db.insert(t.sourceVerifications)
       .values({ sourceId: source.id, entityType: v.entityType, entityId: v.entityId, checked: v.checked, status: v.status, confidence: v.confidence, verifiedAt: v.verifiedAt, verifiedBy: user.displayName })
       .run();
-    audit(user, "add_source", v.entityType, v.entityId, `Added source “${v.title}” (${v.status})`);
+    await audit(user, "add_source", v.entityType, v.entityId, `Added source “${v.title}” (${v.status})`);
     afterContentChange();
     return {};
   });
@@ -357,10 +354,10 @@ export async function updateVerification(id: string, input: { status: (typeof ST
   return run(async () => {
     const user = await requireRole(ADMIN_ROLES);
     const v = z.object({ status: z.enum(STATUSES), verifiedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), confidence: z.enum(["high", "medium", "low"]) }).parse(input);
-    const row = db.select().from(t.sourceVerifications).where(eq(t.sourceVerifications.id, id)).get();
+    const row = await db.select().from(t.sourceVerifications).where(eq(t.sourceVerifications.id, id)).get();
     if (!row) throw new UserError("Not found.");
-    db.update(t.sourceVerifications).set({ ...v, verifiedBy: user.displayName }).where(eq(t.sourceVerifications.id, id)).run();
-    audit(user, "verify", row.entityType, row.entityId, `Verification set to ${v.status} on ${v.verifiedAt}`);
+    await db.update(t.sourceVerifications).set({ ...v, verifiedBy: user.displayName }).where(eq(t.sourceVerifications.id, id)).run();
+    await audit(user, "verify", row.entityType, row.entityId, `Verification set to ${v.status} on ${v.verifiedAt}`);
     afterContentChange();
     return {};
   });
@@ -369,10 +366,10 @@ export async function updateVerification(id: string, input: { status: (typeof ST
 export async function removeVerification(id: string) {
   return run(async () => {
     const user = await requireRole(ADMIN_ROLES);
-    const row = db.select().from(t.sourceVerifications).where(eq(t.sourceVerifications.id, id)).get();
+    const row = await db.select().from(t.sourceVerifications).where(eq(t.sourceVerifications.id, id)).get();
     if (!row) return {};
-    db.delete(t.sourceVerifications).where(eq(t.sourceVerifications.id, id)).run();
-    audit(user, "remove_source", row.entityType, row.entityId, "Removed a source citation");
+    await db.delete(t.sourceVerifications).where(eq(t.sourceVerifications.id, id)).run();
+    await audit(user, "remove_source", row.entityType, row.entityId, "Removed a source citation");
     afterContentChange();
     return {};
   });
@@ -405,18 +402,18 @@ export async function uploadImage(form: FormData) {
     }
     if (!meta.width || meta.width < 600) throw new UserError("Image must be at least 600px wide.");
     const name = `${entityType}-${entityId.slice(0, 8)}-${Date.now()}.webp`;
-    const dir = uploadsDir();
-    mkdirSync(dir, { recursive: true });
+
     const info = await sharp(buf).rotate().resize({ width: 1600, withoutEnlargement: true }).webp({ quality: 74 }).toBuffer({ resolveWithObject: true });
-    writeFileSync(join(dir, name), info.data);
-    const m = db
+    // Stored in Postgres (Vercel's filesystem is read-only); served and CDN-cached by /media/uploads/[file].
+    await db.insert(t.mediaBlobs).values({ name, contentType: "image/webp", data: info.data }).run();
+    const m = (await db
       .insert(t.media)
       .values({ src: `/media/uploads/${name}`, width: info.info.width, height: info.info.height, alt, author: author || null, license: license || null, sourceUrl: sourceUrl || null, representative })
       .returning({ id: t.media.id })
-      .get();
-    const count = db.select().from(t.entityMedia).where(and(eq(t.entityMedia.entityType, entityType), eq(t.entityMedia.entityId, entityId))).all().length;
-    db.insert(t.entityMedia).values({ entityType, entityId, mediaId: m.id, role: count === 0 ? "hero" : "gallery", sort: count }).run();
-    audit(user, "add_image", entityType, entityId, `Uploaded image “${alt}”`);
+      .get())!;
+    const count = (await db.select().from(t.entityMedia).where(and(eq(t.entityMedia.entityType, entityType), eq(t.entityMedia.entityId, entityId))).all()).length;
+    await db.insert(t.entityMedia).values({ entityType, entityId, mediaId: m.id, role: count === 0 ? "hero" : "gallery", sort: count }).run();
+    await audit(user, "add_image", entityType, entityId, `Uploaded image “${alt}”`);
     afterContentChange();
     return {};
   });
@@ -428,20 +425,20 @@ export async function updateImageLink(linkId: string, input: { role?: "hero" | "
     input = z
       .object({ role: z.enum(["hero", "gallery"]).optional(), sort: z.number().int().min(-1).max(1000).optional(), alt: z.string().optional(), remove: z.boolean().optional() })
       .parse(input);
-    const link = db.select().from(t.entityMedia).where(eq(t.entityMedia.id, linkId)).get();
+    const link = await db.select().from(t.entityMedia).where(eq(t.entityMedia.id, linkId)).get();
     if (!link) throw new UserError("Image not found.");
     if (input.remove) {
-      db.delete(t.entityMedia).where(eq(t.entityMedia.id, linkId)).run();
-      audit(user, "remove_image", link.entityType, link.entityId, "Removed an image");
+      await db.delete(t.entityMedia).where(eq(t.entityMedia.id, linkId)).run();
+      await audit(user, "remove_image", link.entityType, link.entityId, "Removed an image");
     } else {
       if (input.role === "hero") {
-        db.update(t.entityMedia).set({ role: "gallery" }).where(and(eq(t.entityMedia.entityType, link.entityType), eq(t.entityMedia.entityId, link.entityId))).run();
+        await db.update(t.entityMedia).set({ role: "gallery" }).where(and(eq(t.entityMedia.entityType, link.entityType), eq(t.entityMedia.entityId, link.entityId))).run();
         // Hero is always shown first.
-        db.update(t.entityMedia).set({ role: "hero", sort: -1 }).where(eq(t.entityMedia.id, linkId)).run();
+        await db.update(t.entityMedia).set({ role: "hero", sort: -1 }).where(eq(t.entityMedia.id, linkId)).run();
       }
-      if (input.sort != null) db.update(t.entityMedia).set({ sort: input.sort }).where(eq(t.entityMedia.id, linkId)).run();
-      if (input.alt) db.update(t.media).set({ alt: z.string().trim().min(5).max(240).parse(input.alt) }).where(eq(t.media.id, link.mediaId)).run();
-      audit(user, "update_image", link.entityType, link.entityId, "Updated image settings");
+      if (input.sort != null) await db.update(t.entityMedia).set({ sort: input.sort }).where(eq(t.entityMedia.id, linkId)).run();
+      if (input.alt) await db.update(t.media).set({ alt: z.string().trim().min(5).max(240).parse(input.alt) }).where(eq(t.media.id, link.mediaId)).run();
+      await audit(user, "update_image", link.entityType, link.entityId, "Updated image settings");
     }
     afterContentChange();
     return {};
@@ -471,9 +468,9 @@ export async function saveEvent(id: string | null, input: z.input<typeof eventSc
     const v = eventSchema.parse(input);
     if (v.endDate && v.endDate < v.startDate) throw new UserError("End date is before the start date.");
     let eid = id;
-    if (id) db.update(t.professionalEvents).set(v).where(eq(t.professionalEvents.id, id)).run();
-    else eid = db.insert(t.professionalEvents).values({ ...v, slug: `${slugify(v.name)}-${v.startDate}` }).returning({ id: t.professionalEvents.id }).get().id;
-    audit(user, id ? "update" : "create", "event", eid, `${id ? "Updated" : "Created"} event “${v.name}”`);
+    if (id) await db.update(t.professionalEvents).set(v).where(eq(t.professionalEvents.id, id)).run();
+    else eid = (await db.insert(t.professionalEvents).values({ ...v, slug: `${slugify(v.name)}-${v.startDate}` }).returning({ id: t.professionalEvents.id }).get())!.id;
+    await audit(user, id ? "update" : "create", "event", eid, `${id ? "Updated" : "Created"} event “${v.name}”`);
     revalidatePath("/connect");
     return { id: eid! };
   });
@@ -483,8 +480,8 @@ export async function setOrganiserStatus(id: string, publishStatus: "draft" | "p
   return run(async () => {
     const user = await requireRole(ADMIN_ROLES);
     z.enum(["draft", "published", "archived"]).parse(publishStatus);
-    db.update(t.eventOrganisers).set({ publishStatus }).where(eq(t.eventOrganisers.id, id)).run();
-    audit(user, "status", "organiser", id, `Organiser set to ${publishStatus}`);
+    await db.update(t.eventOrganisers).set({ publishStatus }).where(eq(t.eventOrganisers.id, id)).run();
+    await audit(user, "status", "organiser", id, `Organiser set to ${publishStatus}`);
     revalidatePath("/connect");
     return {};
   });
@@ -497,8 +494,8 @@ export async function setUserRole(userId: string, role: "super_admin" | "content
     const admin = await requireRole(["super_admin"]);
     z.enum(["super_admin", "content_editor", "member", "visitor"]).parse(role);
     if (userId === admin.id && role !== "super_admin") throw new UserError("You can't remove your own super admin role.");
-    db.update(t.users).set({ role }).where(eq(t.users.id, userId)).run();
-    audit(admin, "role", "user", userId, `Role changed to ${role}`);
+    await db.update(t.users).set({ role }).where(eq(t.users.id, userId)).run();
+    await audit(admin, "role", "user", userId, `Role changed to ${role}`);
     revalidatePath("/admin/users");
     return {};
   });
@@ -508,9 +505,9 @@ export async function setUserDisabled(userId: string, disabled: boolean) {
   return run(async () => {
     const admin = await requireRole(["super_admin"]);
     if (userId === admin.id) throw new UserError("You can't disable your own account.");
-    db.update(t.users).set({ disabledAt: disabled ? new Date().toISOString() : null }).where(eq(t.users.id, userId)).run();
-    if (disabled) db.delete(t.sessions).where(eq(t.sessions.userId, userId)).run();
-    audit(admin, disabled ? "disable" : "enable", "user", userId, `${disabled ? "Disabled" : "Re-enabled"} user`);
+    await db.update(t.users).set({ disabledAt: disabled ? new Date().toISOString() : null }).where(eq(t.users.id, userId)).run();
+    if (disabled) await db.delete(t.sessions).where(eq(t.sessions.userId, userId)).run();
+    await audit(admin, disabled ? "disable" : "enable", "user", userId, `${disabled ? "Disabled" : "Re-enabled"} user`);
     revalidatePath("/admin/users");
     return {};
   });
@@ -520,8 +517,8 @@ export async function setFeedbackStatus(id: string, status: "open" | "resolved" 
   return run(async () => {
     const user = await requireRole(ADMIN_ROLES);
     z.enum(["open", "resolved", "dismissed"]).parse(status);
-    db.update(t.feedback).set({ status }).where(eq(t.feedback.id, id)).run();
-    audit(user, "feedback", "feedback", id, `Feedback marked ${status}`);
+    await db.update(t.feedback).set({ status }).where(eq(t.feedback.id, id)).run();
+    await audit(user, "feedback", "feedback", id, `Feedback marked ${status}`);
     revalidatePath("/admin/feedback");
     return {};
   });
@@ -531,8 +528,8 @@ export async function moderateReview(id: string, status: "published" | "rejected
   return run(async () => {
     const user = await requireRole(ADMIN_ROLES);
     z.enum(["published", "rejected"]).parse(status);
-    db.update(t.reviews).set({ status }).where(eq(t.reviews.id, id)).run();
-    audit(user, "moderate", "review", id, `Review ${status}`);
+    await db.update(t.reviews).set({ status }).where(eq(t.reviews.id, id)).run();
+    await audit(user, "moderate", "review", id, `Review ${status}`);
     revalidatePath("/", "layout");
     return {};
   });
@@ -544,8 +541,8 @@ export async function saveFx(input: { inrToVnd: number; usdToVnd: number; source
   return run(async () => {
     const user = await requireRole(ADMIN_ROLES);
     const v = z.object({ inrToVnd: z.number().min(50).max(1000), usdToVnd: z.number().min(10000).max(50000), source: z.string().trim().min(3).max(300) }).parse(input);
-    setSetting("fx", { ...v, updatedAt: new Date().toISOString(), isLive: false }, user.id);
-    audit(user, "settings", "settings", "fx", `FX set: 1 INR = ${v.inrToVnd} VND, 1 USD = ${v.usdToVnd} VND`);
+    await setSetting("fx", { ...v, updatedAt: new Date().toISOString(), isLive: false }, user.id);
+    await audit(user, "settings", "settings", "fx", `FX set: 1 INR = ${v.inrToVnd} VND, 1 USD = ${v.usdToVnd} VND`);
     revalidatePath("/", "layout");
     return {};
   });
@@ -556,8 +553,8 @@ export async function saveBudgetCategory(slug: string, input: { budgetPerDay: nu
     const user = await requireRole(ADMIN_ROLES);
     const n = z.number().int().min(0).max(100_000_000).nullable();
     const v = z.object({ budgetPerDay: n, balancedPerDay: n, comfortablePerDay: n, description: z.string().trim().max(300) }).parse(input);
-    db.update(t.budgetCategories).set(v).where(eq(t.budgetCategories.slug, slug)).run();
-    audit(user, "settings", "budget_category", slug, `Updated budget baselines for ${slug}`);
+    await db.update(t.budgetCategories).set(v).where(eq(t.budgetCategories.slug, slug)).run();
+    await audit(user, "settings", "budget_category", slug, `Updated budget baselines for ${slug}`);
     revalidatePath("/", "layout");
     return {};
   });

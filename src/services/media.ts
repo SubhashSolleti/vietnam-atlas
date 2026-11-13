@@ -18,10 +18,10 @@ export interface ImageRef {
 
 type EntityType = "region" | "destination" | "attraction" | "activity";
 
-export function imagesFor(entityType: EntityType, ids: string[]) {
+export async function imagesFor(entityType: EntityType, ids: string[]) {
   const out = new Map<string, ImageRef[]>();
   if (!ids.length) return out;
-  const rows = db
+  const rows = await db
     .select({ link: t.entityMedia, m: t.media })
     .from(t.entityMedia)
     .innerJoin(t.media, eq(t.media.id, t.entityMedia.mediaId))

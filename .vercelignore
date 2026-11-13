@@ -1,0 +1,11 @@
+# Never upload local data, secrets or build output to Vercel.
+data/
+.env*
+!.env.example
+.next/
+.next-*/
+test-results/
+playwright-report/
+.claude/
+.mcp.json
+*.tsbuildinfo

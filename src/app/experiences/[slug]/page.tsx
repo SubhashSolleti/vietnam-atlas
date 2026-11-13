@@ -21,7 +21,7 @@ import { ReviewForm } from "./review-form";
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const { slug } = await params;
-  const data = getActivityBySlug(slug);
+  const data = await getActivityBySlug(slug);
   if (!data) return { title: "Experience not found" };
   const img = data.images.own[0] ?? data.card?.image ?? null;
   return {
@@ -34,7 +34,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
 
 export default async function ActivityPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const data = getActivityBySlug(slug);
+  const data = await getActivityBySlug(slug);
   if (!data) notFound();
   const { activity: a, destination: d, region, attraction, price, categories, images, freeAlternatives, paidAlternatives, related, nearbyAttractions, reviews, sources, card } = data;
 
@@ -53,10 +53,10 @@ export default async function ActivityPage({ params }: { params: Promise<{ slug:
   let candidateId: string | null = null;
   let myVote: string | null = null;
   if (active) {
-    const c = db.select().from(t.tripCandidates).where(and(eq(t.tripCandidates.tripId, active.trip.id), eq(t.tripCandidates.activityId, a.id))).get();
+    const c = await db.select().from(t.tripCandidates).where(and(eq(t.tripCandidates.tripId, active.trip.id), eq(t.tripCandidates.activityId, a.id))).get();
     if (c) {
       candidateId = c.id;
-      myVote = db.select().from(t.groupVotes).where(and(eq(t.groupVotes.candidateId, c.id), eq(t.groupVotes.memberId, active.member.id))).get()?.vote ?? null;
+      myVote = (await db.select().from(t.groupVotes).where(and(eq(t.groupVotes.candidateId, c.id), eq(t.groupVotes.memberId, active.member.id))).get())?.vote ?? null;
     }
   }
 

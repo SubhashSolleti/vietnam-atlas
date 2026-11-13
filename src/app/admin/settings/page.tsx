@@ -6,11 +6,11 @@ import { requireAdminPage } from "@/lib/auth";
 
 export default async function AdminSettings() {
   await requireAdminPage(undefined, "/admin/settings");
-  const cats = db.select().from(t.budgetCategories).orderBy(asc(t.budgetCategories.sort)).all();
+  const cats = await db.select().from(t.budgetCategories).orderBy(asc(t.budgetCategories.sort)).all();
   return (
     <div>
       <h1 className="text-3xl">Settings</h1>
-      <SettingsAdmin fx={getFx()} categories={cats} />
+      <SettingsAdmin fx={await getFx()} categories={cats} />
     </div>
   );
 }

@@ -13,14 +13,14 @@ const PAGE = 50;
 export default async function AdminActivities({ searchParams }: { searchParams: Promise<{ q?: string; status?: string; destination?: string; page?: string }> }) {
   await requireAdminPage(undefined, "/admin/activities");
   const sp = await searchParams;
-  const dests = db.select({ id: t.destinations.id, name: t.destinations.name }).from(t.destinations).orderBy(asc(t.destinations.name)).all();
-  const rows = db
+  const dests = await db.select({ id: t.destinations.id, name: t.destinations.name }).from(t.destinations).orderBy(asc(t.destinations.name)).all();
+  const rows = (await db
     .select({ a: t.activities, d: t.destinations.name, price: t.activityPrices.status })
     .from(t.activities)
     .innerJoin(t.destinations, eq(t.destinations.id, t.activities.destinationId))
     .leftJoin(t.activityPrices, eq(t.activityPrices.activityId, t.activities.id))
     .orderBy(asc(t.destinations.name), asc(t.activities.title))
-    .all()
+    .all())
     .filter((r) => (!sp.status || r.a.status === sp.status) && (!sp.destination || r.a.destinationId === sp.destination) && (!sp.q || normalise(`${r.a.title} ${r.d}`).includes(normalise(sp.q))));
   const uniq = [...new Map(rows.map((r) => [r.a.id, r])).values()];
   const page = Math.max(1, Number(sp.page) || 1);

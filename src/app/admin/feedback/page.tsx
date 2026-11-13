@@ -6,8 +6,8 @@ import { requireAdminPage } from "@/lib/auth";
 
 export default async function AdminFeedback() {
   await requireAdminPage(undefined, "/admin/feedback");
-  const fb = db.select().from(t.feedback).orderBy(desc(t.feedback.createdAt)).all();
-  const reviews = db.select({ r: t.reviews, a: t.activities.title, slug: t.activities.slug }).from(t.reviews).innerJoin(t.activities, eq(t.activities.id, t.reviews.activityId)).orderBy(desc(t.reviews.createdAt)).all();
+  const fb = await db.select().from(t.feedback).orderBy(desc(t.feedback.createdAt)).all();
+  const reviews = await db.select({ r: t.reviews, a: t.activities.title, slug: t.activities.slug }).from(t.reviews).innerJoin(t.activities, eq(t.activities.id, t.reviews.activityId)).orderBy(desc(t.reviews.createdAt)).all();
   return (
     <div>
       <h1 className="text-3xl">Feedback, corrections &amp; reviews</h1>

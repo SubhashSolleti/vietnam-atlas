@@ -22,7 +22,7 @@ const KINDS: { kind: SearchKind | "all"; label: string; icon: typeof MapPin }[] 
 export default async function SearchPage({ searchParams }: { searchParams: Promise<{ q?: string; kind?: string }> }) {
   const { q = "", kind: rawKind = "all" } = await searchParams;
   const kind = KINDS.some((k) => k.kind === rawKind) ? rawKind : "all";
-  const all = q.trim() ? search(q, { limit: 400 }) : [];
+  const all = q.trim() ? await search(q, { limit: 400 }) : [];
   const hits = kind === "all" ? all : all.filter((h) => h.kind === kind);
   return (
     <div className="container-x max-w-4xl pt-10">

@@ -6,20 +6,20 @@ import { requireAdminPage } from "@/lib/auth";
 
 export default async function AdminDashboard() {
   await requireAdminPage(undefined, "/admin");
-  const count = (table: typeof t.activities | typeof t.destinations | typeof t.attractions, status: "draft" | "published" | "archived") =>
-    db.select({ n: sql<number>`count(*)` }).from(table).where(eq(table.status, status)).get()!.n;
+  const count = async (table: typeof t.activities | typeof t.destinations | typeof t.attractions, status: "draft" | "published" | "archived") =>
+    (await db.select({ n: sql<number>`count(*)::int` }).from(table).where(eq(table.status, status)).get())!.n;
   const stats = [
-    { label: "Destinations", href: "/admin/destinations", pub: count(t.destinations, "published"), draft: count(t.destinations, "draft") },
-    { label: "Attractions", href: "/admin/attractions", pub: count(t.attractions, "published"), draft: count(t.attractions, "draft") },
-    { label: "Activities", href: "/admin/activities", pub: count(t.activities, "published"), draft: count(t.activities, "draft") },
+    { label: "Destinations", href: "/admin/destinations", pub: await count(t.destinations, "published"), draft: await count(t.destinations, "draft") },
+    { label: "Attractions", href: "/admin/attractions", pub: await count(t.attractions, "published"), draft: await count(t.attractions, "draft") },
+    { label: "Activities", href: "/admin/activities", pub: await count(t.activities, "published"), draft: await count(t.activities, "draft") },
   ];
-  const needsVerification = db.select({ n: sql<number>`count(*)` }).from(t.sourceVerifications).where(eq(t.sourceVerifications.status, "needs_verification")).get()!.n;
-  const estimatedPrices = db.select({ n: sql<number>`count(*)` }).from(t.activityPrices).where(sql`${t.activityPrices.isCurrent} = 1 and ${t.activityPrices.status} = 'estimated'`).get()!.n;
-  const openFeedback = db.select({ n: sql<number>`count(*)` }).from(t.feedback).where(eq(t.feedback.status, "open")).get()!.n;
-  const pendingReviews = db.select({ n: sql<number>`count(*)` }).from(t.reviews).where(eq(t.reviews.status, "pending")).get()!.n;
-  const trips = db.select({ n: sql<number>`count(*)` }).from(t.trips).get()!.n;
-  const users = db.select({ n: sql<number>`count(*)` }).from(t.users).get()!.n;
-  const recent = db.select().from(t.adminAuditLogs).orderBy(desc(t.adminAuditLogs.createdAt)).limit(10).all();
+  const needsVerification = (await db.select({ n: sql<number>`count(*)::int` }).from(t.sourceVerifications).where(eq(t.sourceVerifications.status, "needs_verification")).get())!.n;
+  const estimatedPrices = (await db.select({ n: sql<number>`count(*)::int` }).from(t.activityPrices).where(sql`${t.activityPrices.isCurrent} = true and ${t.activityPrices.status} = 'estimated'`).get())!.n;
+  const openFeedback = (await db.select({ n: sql<number>`count(*)::int` }).from(t.feedback).where(eq(t.feedback.status, "open")).get())!.n;
+  const pendingReviews = (await db.select({ n: sql<number>`count(*)::int` }).from(t.reviews).where(eq(t.reviews.status, "pending")).get())!.n;
+  const trips = (await db.select({ n: sql<number>`count(*)::int` }).from(t.trips).get())!.n;
+  const users = (await db.select({ n: sql<number>`count(*)::int` }).from(t.users).get())!.n;
+  const recent = await db.select().from(t.adminAuditLogs).orderBy(desc(t.adminAuditLogs.createdAt)).limit(10).all();
   return (
     <div>
       <h1 className="text-3xl">Dashboard</h1>

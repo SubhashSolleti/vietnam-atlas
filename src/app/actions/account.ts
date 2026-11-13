@@ -22,19 +22,19 @@ export async function registerAction(_prev: ActionResult | null, form: FormData)
     const v = z
       .object({ displayName: z.string().trim().min(1, "Enter your name").max(40), email, password })
       .parse({ displayName: form.get("displayName"), email: form.get("email"), password: form.get("password") });
-    if (db.select({ id: t.users.id }).from(t.users).where(eq(t.users.email, v.email)).get())
+    if (await db.select({ id: t.users.id }).from(t.users).where(eq(t.users.email, v.email)).get())
       throw new UserError("An account with this email already exists. Sign in instead.");
     const current = await getCurrentUser();
     const passwordHash = await hashPassword(v.password);
     if (current?.isGuest) {
       // Upgrade the guest account in place so wishlist, votes and trips are kept.
-      db.update(t.users).set({ email: v.email, passwordHash, displayName: v.displayName, isGuest: false, role: "member" }).where(eq(t.users.id, current.id)).run();
-      db.update(t.tripMembers).set({ displayName: v.displayName }).where(and(eq(t.tripMembers.userId, current.id), isNotNull(t.tripMembers.userId))).run();
+      await db.update(t.users).set({ email: v.email, passwordHash, displayName: v.displayName, isGuest: false, role: "member" }).where(eq(t.users.id, current.id)).run();
+      await db.update(t.tripMembers).set({ displayName: v.displayName }).where(and(eq(t.tripMembers.userId, current.id), isNotNull(t.tripMembers.userId))).run();
       // New privilege level → new session token (the guest token stops working).
       await destroySession();
       await createSession(current.id);
     } else {
-      const u = db.insert(t.users).values({ email: v.email, passwordHash, displayName: v.displayName, isGuest: false, role: "member" }).returning().get();
+      const u = (await db.insert(t.users).values({ email: v.email, passwordHash, displayName: v.displayName, isGuest: false, role: "member" }).returning().get())!;
       await createSession(u.id);
     }
     return {};
@@ -60,17 +60,17 @@ export async function loginAction(_prev: ActionResult | null, form: FormData): P
     const known = await isKnownDevice(v.email);
     const clientAccount = known ? `login-fail-device:${v.email}` : `${await clientKey("login-fail")}:${v.email}`;
     const WINDOW = 15 * 60_000;
-    if (failures(clientAccount) >= 10 || (!known && failures(`login-fail-account:${v.email}`) >= 100))
+    if (await failures(clientAccount) >= 10 || (!known && await failures(`login-fail-account:${v.email}`) >= 100))
       throw new UserError("Too many sign-in attempts. Please wait 15 minutes.");
-    const user = db.select().from(t.users).where(eq(t.users.email, v.email)).get();
+    const user = await db.select().from(t.users).where(eq(t.users.email, v.email)).get();
     // Always run the password hash so response time doesn't reveal whether the email exists.
     const valid = await verifyPassword(v.password, user?.passwordHash ?? DUMMY_HASH);
     if (!user || user.disabledAt || !valid) {
-      recordFailure(clientAccount, WINDOW);
-      recordFailure(`login-fail-account:${v.email}`, WINDOW);
+      await recordFailure(clientAccount, WINDOW);
+      await recordFailure(`login-fail-account:${v.email}`, WINDOW);
       throw new UserError("Email or password is incorrect.");
     }
-    clearFailures(clientAccount);
+    await clearFailures(clientAccount);
     await rememberDevice(v.email);
     await destroySession();
     await createSession(user.id);
@@ -90,7 +90,7 @@ export async function updateAccount(input: { displayName?: string; avatarColor?:
   return run(async () => {
     const v = z.object({ displayName: z.string().trim().min(1).max(40).optional(), avatarColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional() }).parse(input);
     const user = await requireUser();
-    db.update(t.users).set(v).where(eq(t.users.id, user.id)).run();
+    await db.update(t.users).set(v).where(eq(t.users.id, user.id)).run();
     revalidatePath("/", "layout");
     return {};
   });
@@ -100,7 +100,7 @@ export async function setTheme(theme: "system" | "light" | "dark") {
   const v = z.enum(["system", "light", "dark"]).parse(theme);
   (await cookies()).set("atlas_theme", v, { path: "/", maxAge: 365 * 86400, sameSite: "lax" });
   const user = await getCurrentUser();
-  if (user) db.update(t.users).set({ theme: v }).where(eq(t.users.id, user.id)).run();
+  if (user) await db.update(t.users).set({ theme: v }).where(eq(t.users.id, user.id)).run();
   return { ok: true as const };
 }
 
@@ -109,25 +109,25 @@ export async function deleteAccount(confirmation: string) {
     const user = await getCurrentUser();
     if (!user) throw new UserError("You're not signed in.");
     if (confirmation.trim().toUpperCase() !== "DELETE") throw new UserError('Type DELETE to confirm.');
-    const owned = db.select().from(t.tripMembers).where(and(eq(t.tripMembers.userId, user.id), eq(t.tripMembers.role, "owner"))).all();
+    const owned = await db.select().from(t.tripMembers).where(and(eq(t.tripMembers.userId, user.id), eq(t.tripMembers.role, "owner"))).all();
     for (const m of owned) {
-      const others = db.select().from(t.tripMembers).where(and(eq(t.tripMembers.tripId, m.tripId), isNotNull(t.tripMembers.userId))).all().filter((x) => x.userId !== user.id);
+      const others = (await db.select().from(t.tripMembers).where(and(eq(t.tripMembers.tripId, m.tripId), isNotNull(t.tripMembers.userId))).all()).filter((x) => x.userId !== user.id);
       if (others.length) throw new UserError("You own a trip that others have joined. Transfer ownership first (Group Planner → Members).");
     }
-    db.transaction((tx) => {
+    await db.transaction(async (tx) => {
       // Trips nobody else has joined are deleted outright (with their plans, votes and invite code).
-      for (const m of owned) tx.delete(t.trips).where(eq(t.trips.id, m.tripId)).run();
+      for (const m of owned) await tx.delete(t.trips).where(eq(t.trips.id, m.tripId)).run();
       // In shared trips the seat is released and anonymised: name, preferences and comments are removed;
       // anonymous votes stay so the group's tallies don't silently change.
-      for (const seat of tx.select().from(t.tripMembers).where(eq(t.tripMembers.userId, user.id)).all()) {
-        tx.update(t.tripMembers).set({ userId: null, joinedAt: null, role: "member", displayName: "Former traveller" }).where(eq(t.tripMembers.id, seat.id)).run();
-        tx.delete(t.tripPreferences).where(eq(t.tripPreferences.memberId, seat.id)).run();
-        tx.insert(t.tripPreferences).values({ memberId: seat.id }).run();
-        tx.update(t.comments).set({ deletedAt: new Date().toISOString() }).where(eq(t.comments.memberId, seat.id)).run();
-        tx.update(t.trips).set({ updatedAt: new Date().toISOString() }).where(eq(t.trips.id, seat.tripId)).run();
+      for (const seat of await tx.select().from(t.tripMembers).where(eq(t.tripMembers.userId, user.id)).all()) {
+        await tx.update(t.tripMembers).set({ userId: null, joinedAt: null, role: "member", displayName: "Former traveller" }).where(eq(t.tripMembers.id, seat.id)).run();
+        await tx.delete(t.tripPreferences).where(eq(t.tripPreferences.memberId, seat.id)).run();
+        await tx.insert(t.tripPreferences).values({ memberId: seat.id }).run();
+        await tx.update(t.comments).set({ deletedAt: new Date().toISOString() }).where(eq(t.comments.memberId, seat.id)).run();
+        await tx.update(t.trips).set({ updatedAt: new Date().toISOString() }).where(eq(t.trips.id, seat.tripId)).run();
       }
       // Personal data (sessions, wishlist, checklist progress, reviews…) is removed by cascade.
-      tx.delete(t.users).where(eq(t.users.id, user.id)).run();
+      await tx.delete(t.users).where(eq(t.users.id, user.id)).run();
     });
     await destroySession();
     return {};
@@ -141,8 +141,8 @@ export async function toggleChecklistItem(itemId: string, done: boolean) {
   return run(async () => {
     z.string().uuid().parse(itemId);
     const user = await requireUser();
-    if (done) db.insert(t.checklistProgress).values({ userId: user.id, itemId, doneAt: new Date().toISOString() }).onConflictDoNothing().run();
-    else db.delete(t.checklistProgress).where(and(eq(t.checklistProgress.userId, user.id), eq(t.checklistProgress.itemId, itemId))).run();
+    if (done) await db.insert(t.checklistProgress).values({ userId: user.id, itemId, doneAt: new Date().toISOString() }).onConflictDoNothing().run();
+    else await db.delete(t.checklistProgress).where(and(eq(t.checklistProgress.userId, user.id), eq(t.checklistProgress.itemId, itemId))).run();
     revalidatePath("/guide", "layout");
     return {};
   });
@@ -165,7 +165,7 @@ export async function saveNetworkingProfile(input: { headline?: string; introduc
       })
       .parse(input);
     const user = await requireUser();
-    db.insert(t.userProfiles)
+    await db.insert(t.userProfiles)
       .values({ userId: user.id, headline: v.headline, introduction: v.introduction, linkedinUrl: v.linkedinUrl || null, interests: v.interests ?? [] })
       .onConflictDoUpdate({ target: t.userProfiles.userId, set: { headline: v.headline, introduction: v.introduction, linkedinUrl: v.linkedinUrl || null, interests: v.interests ?? [] } })
       .run();
@@ -189,11 +189,11 @@ export async function saveContact(contactId: string | null, input: z.input<typeo
     const v = contactSchema.parse(input);
     const user = await requireUser();
     if (contactId) {
-      const c = db.select().from(t.networkingContacts).where(and(eq(t.networkingContacts.id, contactId), eq(t.networkingContacts.userId, user.id))).get();
+      const c = await db.select().from(t.networkingContacts).where(and(eq(t.networkingContacts.id, contactId), eq(t.networkingContacts.userId, user.id))).get();
       if (!c) throw new UserError("Contact not found.");
-      db.update(t.networkingContacts).set(v).where(eq(t.networkingContacts.id, contactId)).run();
+      await db.update(t.networkingContacts).set(v).where(eq(t.networkingContacts.id, contactId)).run();
     } else {
-      db.insert(t.networkingContacts).values({ userId: user.id, ...v }).run();
+      await db.insert(t.networkingContacts).values({ userId: user.id, ...v }).run();
     }
     revalidatePath("/connect");
     return {};
@@ -203,7 +203,7 @@ export async function saveContact(contactId: string | null, input: z.input<typeo
 export async function deleteContact(contactId: string) {
   return run(async () => {
     const user = await requireUser();
-    db.delete(t.networkingContacts).where(and(eq(t.networkingContacts.id, contactId), eq(t.networkingContacts.userId, user.id))).run();
+    await db.delete(t.networkingContacts).where(and(eq(t.networkingContacts.id, contactId), eq(t.networkingContacts.userId, user.id))).run();
     revalidatePath("/connect");
     return {};
   });
@@ -217,7 +217,7 @@ export async function submitFeedback(input: { type: "feedback" | "correction" | 
       .object({ type: z.enum(["feedback", "correction", "group_report"]), message: z.string().trim().min(10, "Please write at least a sentence").max(3000), page: z.string().max(300).optional() })
       .parse(input);
     const user = await getCurrentUser();
-    db.insert(t.feedback).values({ ...v, userId: user?.id ?? null }).run();
+    await db.insert(t.feedback).values({ ...v, userId: user?.id ?? null }).run();
     return {};
   });
 }
@@ -236,7 +236,7 @@ export async function submitReview(input: { activityId: string; rating: number; 
     const user = await getCurrentUser();
     if (!user || user.isGuest) throw new UserError("Create a free account to write a review.");
     // One review per person per experience: writing again replaces it and sends it back to moderation.
-    db.insert(t.reviews)
+    await db.insert(t.reviews)
       .values({ ...v, userId: user.id, status: "pending" })
       .onConflictDoUpdate({ target: [t.reviews.activityId, t.reviews.userId], set: { rating: v.rating, body: v.body, visitedOn: v.visitedOn ?? null, status: "pending", createdAt: new Date().toISOString() } })
       .run();

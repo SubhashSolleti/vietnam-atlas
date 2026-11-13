@@ -11,11 +11,11 @@ import { requireAdminPage } from "@/lib/auth";
 export default async function EditDestination({ params }: { params: Promise<{ id: string }> }) {
   await requireAdminPage(undefined, "/admin/destinations");
   const { id } = await params;
-  const d = id === "new" ? null : db.select().from(t.destinations).where(eq(t.destinations.id, id)).get();
+  const d = id === "new" ? null : await db.select().from(t.destinations).where(eq(t.destinations.id, id)).get();
   if (id !== "new" && !d) notFound();
-  const regions = db.select({ id: t.regions.id, name: t.regions.name }).from(t.regions).orderBy(asc(t.regions.sort)).all();
-  const parents = db.select({ id: t.destinations.id, name: t.destinations.name }).from(t.destinations).orderBy(asc(t.destinations.name)).all().filter((x) => x.id !== d?.id);
-  const images = d ? db.select({ link: t.entityMedia, m: t.media }).from(t.entityMedia).innerJoin(t.media, eq(t.media.id, t.entityMedia.mediaId)).where(and(eq(t.entityMedia.entityType, "destination"), eq(t.entityMedia.entityId, d.id))).orderBy(asc(t.entityMedia.sort)).all() : [];
+  const regions = await db.select({ id: t.regions.id, name: t.regions.name }).from(t.regions).orderBy(asc(t.regions.sort)).all();
+  const parents = (await db.select({ id: t.destinations.id, name: t.destinations.name }).from(t.destinations).orderBy(asc(t.destinations.name)).all()).filter((x) => x.id !== d?.id);
+  const images = d ? await db.select({ link: t.entityMedia, m: t.media }).from(t.entityMedia).innerJoin(t.media, eq(t.media.id, t.entityMedia.mediaId)).where(and(eq(t.entityMedia.entityType, "destination"), eq(t.entityMedia.entityId, d.id))).orderBy(asc(t.entityMedia.sort)).all() : [];
   return (
     <div>
       <Link href="/admin/destinations" className="text-xs text-muted hover:text-ink">← Destinations</Link>
@@ -24,7 +24,7 @@ export default async function EditDestination({ params }: { params: Promise<{ id
       <DestinationEditor id={d?.id ?? null} initial={d ?? null} regions={regions} parents={parents} />
       {d && (
         <div className="mt-12 grid gap-10">
-          <SourcesEditor entityType="destination" entityId={d.id} sources={sourcesFor("destination", [d.id])} />
+          <SourcesEditor entityType="destination" entityId={d.id} sources={await sourcesFor("destination", [d.id])} />
           <MediaEditor entityType="destination" entityId={d.id} images={images.map(({ link, m }) => ({ linkId: link.id, src: m.src, alt: m.alt, role: link.role, author: m.author, license: m.license }))} />
         </div>
       )}

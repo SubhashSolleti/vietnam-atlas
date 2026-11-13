@@ -23,8 +23,8 @@ export default async function BudgetPage() {
       </div>
     );
   const { trip, member } = active;
-  const { result, members, fx, categories, expenses } = tripBudget(trip);
-  const catalog = getCatalog();
+  const { result, members, fx, categories, expenses } = await tripBudget(trip);
+  const catalog = await getCatalog();
   const destName = Object.fromEntries(catalog.destinations.map((d) => [d.id, d.name]));
   return (
     <div className="container-x pt-8">

@@ -1,21 +1,23 @@
-# Vietnam Atlas: local edition
+# Vietnam Atlas
 
 **Discover More. Experience Vietnam. Plan Together.**
 
 A Vietnam discovery platform and collaborative group trip planner: destination guides, an experience catalogue with honest prices and seasonality, a wishlist and comparison tool, a group workspace with voting and consensus, an itinerary builder with planning alerts, a budget engine, an A–Z travel guide, an optional tech-networking area, and an admin CMS.
 
-This edition runs **entirely on your machine**: a local SQLite database, local accounts, locally stored photographs and fonts. No cloud services or API keys are required.
+It runs on **Next.js on Vercel** with **Postgres on Supabase**. For local work you can point it at Supabase or at a local Postgres in Docker.
 
 ---
 
-## Quick start
+## Quick start (local)
 
-Requirements: **Node.js 22+** (tested on Node 24) and npm.
+Requirements: **Node.js 22+** (tested on Node 24), npm, and Docker (for a local Postgres) or a Supabase project.
 
 ```bash
-npm install          # installs dependencies (better-sqlite3 ships a prebuilt binary)
-npm run db:reset     # creates data/atlas.db, applies migrations, seeds all content
-npm run dev          # http://localhost:3000
+npm install
+npm run db:local          # starts Postgres 17 in Docker on port 54329 (skip if you use Supabase)
+cp .env.example .env.local # then set DATABASE_URL (see the file for the local and Supabase formats)
+npm run db:reset          # empties the database, applies migrations, seeds all content
+npm run dev               # http://localhost:3000
 ```
 
 Then:
@@ -25,17 +27,24 @@ Then:
 3. Open **Group Planner → Members** to copy the invite link. The invite code is random (set `DEMO_INVITE_CODE` before seeding to choose one). Share it only with the travellers: anyone holding it can join the trip.
 4. Each cousin opens the link and claims their seat. Each browser is a separate guest identity until they register.
 
-**Admin CMS:** <http://localhost:3000/admin>`admin@atlas.local` (super admin) and `editor@atlas.local` (content editor).
+**Admin CMS:** `/admin` with `admin@atlas.local` (super admin) or `editor@atlas.local` (content editor).
 
-### Production-mode build (still local)
+`db:reset` refuses to touch a non-local database unless you pass `--yes-really-reset`.
 
-```bash
-npm run build && npm start
-```
+---
 
-### Sharing on your home network
+## Deploying: Supabase + Vercel
 
-Run `npm run dev -- -H 0.0.0.0` (or `npm start -- -H 0.0.0.0`) and share the invite link from Group Planner → Members, with your computer's LAN address in place of `localhost`. Everyone works on the same SQLite file, and group pages refresh automatically every few seconds.
+1. **Supabase:** in the dashboard open **Connect** and copy two URIs: the **Transaction pooler** (port 6543) for the app and the **Session pooler** (port 5432) for migrations.
+2. **Prepare the database** from your machine, with both URIs in `.env.local` as `DATABASE_URL` and `MIGRATION_DATABASE_URL`:
+   ```bash
+   npm run db:reset -- --yes-really-reset   # first time only: creates every table and seeds the content
+   npm run db:migrate                       # later releases: applies new migrations only
+   ```
+   Migrations enable Row Level Security on every table and revoke Supabase's Data API roles, so only the app's own connection can read or write.
+3. **Vercel:** `vercel link`, then set `DATABASE_URL` (transaction pooler), `NEXT_PUBLIC_SITE_URL` (your production URL) and `TRUST_PROXY=1` for Production, and deploy with `vercel deploy --prod`. Put the functions in the region nearest your Supabase project (see `vercel.json`).
+
+Nothing at runtime writes to the filesystem: admin image uploads are stored in Postgres and served (and CDN-cached) by `/media/uploads/[file]`.
 
 ---
 
@@ -45,17 +54,18 @@ Run `npm run dev -- -H 0.0.0.0` (or `npm start -- -H 0.0.0.0`) and share the inv
 |---|---|
 | `npm run dev` | Start the development server |
 | `npm run build` / `npm start` | Production build and server |
-| `npm run db:reset` | Delete and recreate `data/atlas.db`: migrate, then seed |
+| `npm run db:local` | Start a local Postgres 17 in Docker (port 54329) |
+| `npm run db:reset` | Empty the database, apply migrations, seed (local databases only, unless `--yes-really-reset`) |
 | `npm run db:migrate` | Apply pending migrations |
 | `npm run db:generate` | Generate a new migration after editing `src/db/schema.ts` |
-| `npm run db:seed` | Seed a freshly migrated database |
+| `npm run db:seed` | Seed a freshly migrated, empty database |
 | `npm run content:check` | Validate the seed content files (slugs, references, months, prices) |
 | `npm run media -- sync` | Make `public/media` match the reviewed photo manifest (downloads missing files, deletes unused ones) |
 | `npm run media -- audit` | Contact sheets of every photo plus a near-duplicate report, for visual review (`data/media-review/audit`) |
 | `npm run media -- candidates` | Gather place-accurate photo candidates (Wikidata and Commons categories) for entities below their photo target; `--search` adds a slower search pass |
 | `npm run media -- apply picks.json` | Add reviewed candidate picks to the manifest with full attribution |
 | `npm test` | Unit tests (Vitest) |
-| `npm run test:e2e` | End-to-end tests (Playwright). Uses its own `data/e2e.db` and port 3100 |
+| `npm run test:e2e` | End-to-end tests (Playwright) against a throwaway local database (`atlas_e2e`), port 3100 |
 | `npm run typecheck` | TypeScript in strict mode |
 
 ---
@@ -84,7 +94,7 @@ Run `npm run dev -- -H 0.0.0.0` (or `npm start -- -H 0.0.0.0`) and share the inv
 ## Architecture
 
 - **Next.js 16** (App Router, Server Components, Server Actions), **React 19**, **TypeScript strict**, **Tailwind CSS 4** with design tokens in `src/app/globals.css`.
-- **SQLite + Drizzle ORM** (`better-sqlite3`), normalised relational schema in `src/db/schema.ts`. Migrations are in `src/db/migrations`.
+- **Postgres (Supabase) + Drizzle ORM** through the `postgres` driver, normalised relational schema in `src/db/schema.ts`, migrations in `src/db/migrations`. The app connects through Supabase's transaction pooler with prepared statements off; `src/db/query-helpers.ts` gives queries promise-returning `.get()` / `.all()` / `.run()`.
 - **Auth:** scrypt password hashes and opaque session tokens (stored hashed). Visitors get an automatic guest account on their first write. Platform roles are `super_admin`, `content_editor`, `member` and `visitor`; trip roles are `owner`, `editor` and `member`.
 - **Leaflet** with OpenStreetMap tiles, **dnd-kit** for drag-and-drop, **lucide-react** icons. Fonts are self-hosted via `@fontsource-variable` (Playfair Display and Inter).
 
@@ -100,7 +110,7 @@ scripts/            content checker, media fetcher, link checker, e2e reset
 tests/unit, tests/e2e
 ```
 
-**Security:** every trip read and write goes through `assertMember()` on the server, so non-members get a 404. Inputs are validated with Zod. Login, registration, joining, comments and feedback are rate-limited. Uploads are type-, size- and dimension-checked, then re-encoded with sharp. They are stored in `data/uploads` (outside `public/`) and served by `/media/uploads/[file]`, so new images appear immediately in production. Session cookies are httpOnly. Admin pages don't show trip contents, and other travellers never see email addresses.
+**Security:** every trip read and write goes through `assertMember()` on the server, so non-members get a 404. Inputs are validated with Zod. Login, registration, joining, comments and feedback are rate-limited. Uploads are type-, size- and dimension-checked, then re-encoded with sharp. They are stored in Postgres (`media_blobs`) and served by `/media/uploads/[file]` with year-long cache headers. Session cookies are httpOnly. Admin pages don't show trip contents, and other travellers never see email addresses.
 
 ---
 
@@ -137,29 +147,20 @@ Photos are only added after a person has looked at them:
 - **Anonymous voting** never sends individual votes to other members, only tallies, your own vote and (for owners/editors) proxy votes for unclaimed seats.
 - **Invites never grant ownership.** Released seats lose any special role; trips are owned by the person who created them.
 - **Headers:** a Content Security Policy (no third-party scripts; map tiles from tile.openstreetmap.org), `X-Frame-Options: DENY`, `nosniff`, a strict referrer policy and HSTS.
-- **Rate limits** are per account (login), per user (joining, comments) and per network. `X-Forwarded-For` is only trusted with `TRUST_PROXY=1`. Set that behind a reverse proxy that overwrites the header.
+- **Rate limits** live in Postgres, so every server instance shares them: failed logins per account and browser (with a known-device cookie so attackers can't lock you out), joins and comments per user, guest creation per network. `X-Forwarded-For` is only trusted with `TRUST_PROXY=1` (set it on Vercel).
+- **Supabase Data API:** Row Level Security is on for every table with no public policies, and the `anon` / `authenticated` roles have no table privileges.
 - **Data integrity:** the database enforces real date ranges, non-negative costs, one current price per activity, one vote per member per item and one review per person per experience.
 
-## Known limitations (local edition)
+## Known limitations
 
-- **Collaboration** is "live" through polling (about every 8 s) on a single local server. Members must reach the same machine, for example over your LAN.
-- **Map tiles** come from tile.openstreetmap.org and need internet access. All map data (pins, routes) is local.
-- **FX rates** are manual. There's no live currency API, by design, for local-only use.
+- **Collaboration** is "live" through polling (about every 8 s), not push. Supabase Realtime could replace `LiveRefresh` later.
+- **Catalogue cache:** each server instance caches the published catalogue for up to a minute, so admin edits can take that long to appear everywhere.
+- **Map tiles** come from tile.openstreetmap.org.
+- **FX rates** are manual (Admin → Settings). There's no live currency API.
 - **Guest identities** are tied to one browser's cookie. Create an account (Account → Register) to use the same identity across browsers.
-- **Password reset and email verification** aren't implemented (there's no mail server). An admin can change roles or disable accounts.
-- **Rate limiting** is in-memory (per process).
+- **Password reset and email verification** aren't implemented (there's no mail service). An admin can change roles or disable accounts.
+- **Seeding a remote database** sends about 7,300 statements, so a first `db:reset` against Supabase takes a few minutes.
 - **Bookings:** there are no booking integrations, and the app deliberately has no checkout.
-
-## Deploying beyond your machine (when you're ready)
-
-The code is structured to move to a hosted stack without rewriting the UI:
-
-1. **Database:** swap `better-sqlite3` for Postgres (Drizzle supports both). Port `schema.ts` to `pg-core` and regenerate migrations. On Supabase, enable Row Level Security mirroring `assertMember()`, so trip tables are readable and writable only by members.
-2. **Auth:** replace `src/lib/auth.ts` with Supabase Auth or Auth.js. Server actions already call `requireUser()` / `requireRole()` / `assertMember()`, so only those helpers change.
-3. **Realtime:** replace `LiveRefresh` polling with Supabase Realtime channels per trip.
-4. **Media:** curated photos in `public/media` ship with the app (long-lived cache headers). Admin uploads live in `data/uploads` (`UPLOADS_DIR`), so keep that directory on a persistent volume together with the database, or move both to object storage (Supabase Storage or S3) and update `media.src`.
-5. **Rate limiting:** back it with Redis or Upstash.
-6. **Hosting:** any Node host (Vercel, Fly.io, Render). Set `NEXT_PUBLIC_SITE_URL` and keep secrets in environment variables.
 
 ## Tests
 

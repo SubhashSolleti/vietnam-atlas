@@ -5,7 +5,7 @@ import { UsersAdmin } from "@/components/admin/users-admin";
 
 export default async function AdminUsers() {
   await requireAdminPage(["super_admin"], "/admin/users");
-  const users = db.select().from(t.users).orderBy(desc(t.users.createdAt)).all();
+  const users = await db.select().from(t.users).orderBy(desc(t.users.createdAt)).all();
   return (
     <div>
       <h1 className="text-3xl">Users</h1>

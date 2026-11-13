@@ -13,13 +13,13 @@ import { getAttractionBySlug } from "@/services/catalog";
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }): Promise<Metadata> {
   const { slug } = await params;
-  const d = getAttractionBySlug(slug);
+  const d = await getAttractionBySlug(slug);
   return d ? { title: `${d.attraction.name}, ${d.destination.name}`, description: d.attraction.description.slice(0, 160), alternates: { canonical: `/attractions/${slug}` } } : { title: "Attraction not found" };
 }
 
 export default async function AttractionPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const data = getAttractionBySlug(slug);
+  const data = await getAttractionBySlug(slug);
   if (!data) notFound();
   const { attraction: a, destination: d, images, activities, sources } = data;
   return (

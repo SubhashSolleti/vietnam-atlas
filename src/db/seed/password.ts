@@ -1,6 +1,6 @@
 import { randomBytes, scryptSync } from "node:crypto";
 
-/** Same format as src/lib/auth.ts hashPassword (scrypt$salt$key), synchronous for the seed script. */
+/** Same format as src/lib/auth.ts await hashPassword (scrypt$salt$key), synchronous for the seed script. */
 export function hashPasswordSync(password: string) {
   const salt = randomBytes(16);
   const key = scryptSync(password, salt, 64);

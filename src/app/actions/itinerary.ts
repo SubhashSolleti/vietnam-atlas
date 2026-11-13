@@ -20,21 +20,21 @@ const localDateTime = isoDateTime.nullable().optional();
 const money = z.number().int().min(0).max(5_000_000_000);
 const participants = participantList.nullable().optional();
 
-function touch(tripId: string) {
-  db.update(t.trips).set({ updatedAt: new Date().toISOString() }).where(eq(t.trips.id, tripId)).run();
+async function touch(tripId: string) {
+  await db.update(t.trips).set({ updatedAt: new Date().toISOString() }).where(eq(t.trips.id, tripId)).run();
   revalidatePath("/", "layout");
 }
 
-function dayAccess(dayId: string, userId: string) {
-  const day = db.select().from(t.itineraryDays).where(eq(t.itineraryDays.id, dayId)).get();
+async function dayAccess(dayId: string, userId: string) {
+  const day = await db.select().from(t.itineraryDays).where(eq(t.itineraryDays.id, dayId)).get();
   if (!day) throw new UserError("Day not found.");
-  return { day, ...assertMember(day.tripId, userId) };
+  return { day, ...(await assertMember(day.tripId, userId)) };
 }
 
 /** null = everyone. An empty or all-invalid selection also means everyone (the forms have no "nobody" option). */
-function cleanParticipants(tripId: string, list: string[] | null | undefined) {
+async function cleanParticipants(tripId: string, list: string[] | null | undefined) {
   if (!list) return null;
-  const ids = new Set(membersOf(tripId).map((m) => m.id));
+  const ids = new Set((await membersOf(tripId)).map((m) => m.id));
   const valid = [...new Set(list)].filter((x) => ids.has(x));
   return valid.length === ids.size || !valid.length ? null : valid;
 }
@@ -47,9 +47,9 @@ export async function updateDay(dayId: string, input: { destinationId?: string |
       .object({ destinationId: z.string().uuid().nullable().optional(), title: z.string().trim().max(120).nullable().optional(), notes: z.string().trim().max(2000).nullable().optional() })
       .parse(input);
     const user = await requireUser();
-    const { day } = dayAccess(dayId, user.id);
-    db.update(t.itineraryDays).set(v).where(eq(t.itineraryDays.id, dayId)).run();
-    touch(day.tripId);
+    const { day } = await dayAccess(dayId, user.id);
+    await db.update(t.itineraryDays).set(v).where(eq(t.itineraryDays.id, dayId)).run();
+    await touch(day.tripId);
     return {};
   });
 }
@@ -72,15 +72,15 @@ export async function addItineraryItem(dayId: string, input: z.input<typeof item
   return run(async () => {
     const v = itemSchema.parse(input);
     const user = await requireUser();
-    const { day } = dayAccess(dayId, user.id);
+    const { day } = await dayAccess(dayId, user.id);
     let { costVnd, costMode, durationMin, title } = v;
     if (v.activityId) {
-      const act = db.select().from(t.activities).where(eq(t.activities.id, v.activityId)).get();
+      const act = await db.select().from(t.activities).where(eq(t.activities.id, v.activityId)).get();
       if (!act) throw new UserError("Activity not found.");
-      const price = db.select().from(t.activityPrices).where(and(eq(t.activityPrices.activityId, act.id), eq(t.activityPrices.isCurrent, true))).get();
-      const cand = db.select().from(t.tripCandidates).where(and(eq(t.tripCandidates.tripId, day.tripId), eq(t.tripCandidates.activityId, act.id))).get();
+      const price = await db.select().from(t.activityPrices).where(and(eq(t.activityPrices.activityId, act.id), eq(t.activityPrices.isCurrent, true))).get();
+      const cand = await db.select().from(t.tripCandidates).where(and(eq(t.tripCandidates.tripId, day.tripId), eq(t.tripCandidates.activityId, act.id))).get();
       if (cand) v.participants ??= cand.participants;
-      const party = cleanParticipants(day.tripId, v.participants)?.length ?? membersOf(day.tripId).length;
+      const party = (await cleanParticipants(day.tripId, v.participants))?.length ?? (await membersOf(day.tripId)).length;
       const est = activityCostFromPrice(price, party);
       costVnd ??= cand?.agreedPriceVnd ?? est.amountVnd;
       costMode ??= cand?.agreedPriceVnd != null ? "per_person" : est.costMode;
@@ -88,10 +88,10 @@ export async function addItineraryItem(dayId: string, input: z.input<typeof item
       title = title || act.title;
       // Scheduling moves an open or approved shortlist item along; a rejected or completed one keeps its status.
       if (cand && (cand.status === "discussion" || cand.status === "approved"))
-        db.update(t.tripCandidates).set({ status: "scheduled" }).where(eq(t.tripCandidates.id, cand.id)).run();
+        await db.update(t.tripCandidates).set({ status: "scheduled" }).where(eq(t.tripCandidates.id, cand.id)).run();
     }
-    const last = db.select({ sort: t.itineraryItems.sort }).from(t.itineraryItems).where(eq(t.itineraryItems.dayId, dayId)).orderBy(asc(t.itineraryItems.sort)).all().at(-1);
-    const row = db
+    const last = (await db.select({ sort: t.itineraryItems.sort }).from(t.itineraryItems).where(eq(t.itineraryItems.dayId, dayId)).orderBy(asc(t.itineraryItems.sort)).all()).at(-1);
+    const row = (await db
       .insert(t.itineraryItems)
       .values({
         tripId: day.tripId,
@@ -104,12 +104,12 @@ export async function addItineraryItem(dayId: string, input: z.input<typeof item
         durationMin: durationMin ?? null,
         costVnd: costVnd ?? 0,
         costMode: costMode ?? "per_person",
-        participants: cleanParticipants(day.tripId, v.participants),
+        participants: await cleanParticipants(day.tripId, v.participants),
         notes: v.notes ?? null,
       })
       .returning({ id: t.itineraryItems.id })
-      .get();
-    touch(day.tripId);
+      .get())!;
+    await touch(day.tripId);
     return { itemId: row.id };
   });
 }
@@ -118,20 +118,20 @@ export async function updateItineraryItem(itemId: string, input: Partial<z.input
   return run(async () => {
     const v = itemSchema.partial().parse(input);
     const user = await requireUser();
-    const item = db.select().from(t.itineraryItems).where(eq(t.itineraryItems.id, itemId)).get();
+    const item = await db.select().from(t.itineraryItems).where(eq(t.itineraryItems.id, itemId)).get();
     if (!item) throw new UserError("That plan no longer exists.");
-    assertMember(item.tripId, user.id);
+    await assertMember(item.tripId, user.id);
     if (item.transportLegId) {
-      const leg = db.select().from(t.transportLegs).where(eq(t.transportLegs.id, item.transportLegId)).get();
+      const leg = await db.select().from(t.transportLegs).where(eq(t.transportLegs.id, item.transportLegId)).get();
       if ((v.startTime !== undefined && v.startTime !== item.startTime) || (v.durationMin !== undefined && v.durationMin !== item.durationMin))
         throw new UserError(leg?.isFixed ? "This is a booked flight. Edit it from the transport panel if it has really changed." : "Change the time on the transport itself so the plan and the booking stay in step.");
     }
     const { participants: p, ...rest } = v;
-    db.update(t.itineraryItems)
-      .set({ ...rest, ...(p !== undefined ? { participants: cleanParticipants(item.tripId, p) } : {}) })
+    await db.update(t.itineraryItems)
+      .set({ ...rest, ...(p !== undefined ? { participants: await cleanParticipants(item.tripId, p) } : {}) })
       .where(eq(t.itineraryItems.id, itemId))
       .run();
-    touch(item.tripId);
+    await touch(item.tripId);
     return {};
   });
 }
@@ -139,23 +139,23 @@ export async function updateItineraryItem(itemId: string, input: Partial<z.input
 export async function deleteItineraryItem(itemId: string) {
   return run(async () => {
     const user = await requireUser();
-    const item = db.select().from(t.itineraryItems).where(eq(t.itineraryItems.id, itemId)).get();
+    const item = await db.select().from(t.itineraryItems).where(eq(t.itineraryItems.id, itemId)).get();
     if (!item) return {};
-    assertMember(item.tripId, user.id);
+    await assertMember(item.tripId, user.id);
     if (item.transportLegId) {
-      const leg = db.select().from(t.transportLegs).where(eq(t.transportLegs.id, item.transportLegId)).get();
+      const leg = await db.select().from(t.transportLegs).where(eq(t.transportLegs.id, item.transportLegId)).get();
       if (leg?.isFixed) throw new UserError("Booked flights can't be removed from the itinerary.");
     }
-    db.delete(t.itineraryItems).where(eq(t.itineraryItems.id, itemId)).run();
+    await db.delete(t.itineraryItems).where(eq(t.itineraryItems.id, itemId)).run();
     if (item.activityId) {
-      const still = db.select().from(t.itineraryItems).where(and(eq(t.itineraryItems.tripId, item.tripId), eq(t.itineraryItems.activityId, item.activityId))).get();
+      const still = await db.select().from(t.itineraryItems).where(and(eq(t.itineraryItems.tripId, item.tripId), eq(t.itineraryItems.activityId, item.activityId))).get();
       if (!still)
-        db.update(t.tripCandidates)
+        await db.update(t.tripCandidates)
           .set({ status: "approved" })
           .where(and(eq(t.tripCandidates.tripId, item.tripId), eq(t.tripCandidates.activityId, item.activityId), eq(t.tripCandidates.status, "scheduled")))
           .run();
     }
-    touch(item.tripId);
+    await touch(item.tripId);
     return {};
   });
 }
@@ -166,25 +166,25 @@ export async function reorderItems(moves: { dayId: string; itemIds: string[] }[]
     const v = z.array(z.object({ dayId: z.string().uuid(), itemIds: z.array(z.string().uuid()).max(100) })).min(1).max(2).parse(moves);
     const user = await requireUser();
     let tripId = "";
-    db.transaction((tx) => {
+    await db.transaction(async (tx) => {
       for (const m of v) {
-        const day = tx.select().from(t.itineraryDays).where(eq(t.itineraryDays.id, m.dayId)).get();
+        const day = await tx.select().from(t.itineraryDays).where(eq(t.itineraryDays.id, m.dayId)).get();
         if (!day) throw new UserError("Day not found.");
-        assertMember(day.tripId, user.id);
+        await assertMember(day.tripId, user.id);
         if (tripId && tripId !== day.tripId) throw new UserError("Items can only move within one trip.");
         tripId = day.tripId;
-        m.itemIds.forEach((id, idx) => {
-          const item = tx.select().from(t.itineraryItems).where(eq(t.itineraryItems.id, id)).get();
+        for (const [idx, id] of m.itemIds.entries()) {
+          const item = await tx.select().from(t.itineraryItems).where(eq(t.itineraryItems.id, id)).get();
           if (!item || item.tripId !== day.tripId) throw new UserError("Item not found.");
           if (item.dayId !== m.dayId && item.transportLegId) {
-            const leg = tx.select().from(t.transportLegs).where(eq(t.transportLegs.id, item.transportLegId)).get();
+            const leg = await tx.select().from(t.transportLegs).where(eq(t.transportLegs.id, item.transportLegId)).get();
             if (leg?.isFixed) throw new UserError("Booked flights can't be moved to another day.");
           }
-          tx.update(t.itineraryItems).set({ dayId: m.dayId, sort: idx }).where(eq(t.itineraryItems.id, id)).run();
-        });
+          await tx.update(t.itineraryItems).set({ dayId: m.dayId, sort: idx }).where(eq(t.itineraryItems.id, id)).run();
+        }
       }
     });
-    touch(tripId);
+    await touch(tripId);
     return {};
   });
 }
@@ -211,25 +211,25 @@ const legSchema = z.object({
 });
 const legInput = legSchema.refine((v) => !v.departAt || !v.arriveAt || v.arriveAt > v.departAt, { message: "Arrival must be after departure", path: ["arriveAt"] });
 
-function syncLegItem(tripId: string, legId: string, opts: { updateFixed?: boolean } = {}) {
-  const leg = db.select().from(t.transportLegs).where(eq(t.transportLegs.id, legId)).get();
+async function syncLegItem(tripId: string, legId: string, opts: { updateFixed?: boolean } = {}) {
+  const leg = await db.select().from(t.transportLegs).where(eq(t.transportLegs.id, legId)).get();
   if (!leg) return;
-  const existingMarker = db.select().from(t.itineraryItems).where(eq(t.itineraryItems.transportLegId, legId)).get();
+  const existingMarker = await db.select().from(t.itineraryItems).where(eq(t.itineraryItems.transportLegId, legId)).get();
   if (leg.isFixed && opts.updateFixed && existingMarker) {
     // Booked flights keep their hand-written marker ("Land at …"); move it to the departure day if that's
     // inside the trip, otherwise to the arrival day, at the matching time.
-    const dayFor = (dt: string | null) => (dt ? db.select().from(t.itineraryDays).where(and(eq(t.itineraryDays.tripId, tripId), eq(t.itineraryDays.date, dt.slice(0, 10)))).get() : undefined);
-    const dep = dayFor(leg.departAt);
-    const arr = dayFor(leg.arriveAt);
+    const dayFor = async (dt: string | null) => (dt ? await db.select().from(t.itineraryDays).where(and(eq(t.itineraryDays.tripId, tripId), eq(t.itineraryDays.date, dt.slice(0, 10)))).get() : undefined);
+    const dep = await dayFor(leg.departAt);
+    const arr = await dayFor(leg.arriveAt);
     const anchor = dep ? { day: dep, at: leg.departAt } : arr ? { day: arr, at: leg.arriveAt } : null;
-    if (anchor) db.update(t.itineraryItems).set({ dayId: anchor.day.id, startTime: anchor.at?.slice(11, 16) ?? null, durationMin: dep ? leg.durationMin : null }).where(eq(t.itineraryItems.id, existingMarker.id)).run();
+    if (anchor) await db.update(t.itineraryItems).set({ dayId: anchor.day.id, startTime: anchor.at?.slice(11, 16) ?? null, durationMin: dep ? leg.durationMin : null }).where(eq(t.itineraryItems.id, existingMarker.id)).run();
     return;
   }
   const date = (leg.departAt ?? leg.arriveAt)?.slice(0, 10);
-  const day = date ? db.select().from(t.itineraryDays).where(and(eq(t.itineraryDays.tripId, tripId), eq(t.itineraryDays.date, date))).get() : null;
-  const existing = db.select().from(t.itineraryItems).where(eq(t.itineraryItems.transportLegId, legId)).get();
+  const day = date ? await db.select().from(t.itineraryDays).where(and(eq(t.itineraryDays.tripId, tripId), eq(t.itineraryDays.date, date))).get() : null;
+  const existing = await db.select().from(t.itineraryItems).where(eq(t.itineraryItems.transportLegId, legId)).get();
   if (!day) {
-    if (existing && !leg.isFixed) db.delete(t.itineraryItems).where(eq(t.itineraryItems.id, existing.id)).run();
+    if (existing && !leg.isFixed) await db.delete(t.itineraryItems).where(eq(t.itineraryItems.id, existing.id)).run();
     return;
   }
   const values = {
@@ -239,10 +239,10 @@ function syncLegItem(tripId: string, legId: string, opts: { updateFixed?: boolea
     participants: leg.participants,
   };
   if (existing) {
-    if (!leg.isFixed) db.update(t.itineraryItems).set({ ...values, dayId: day.id }).where(eq(t.itineraryItems.id, existing.id)).run();
+    if (!leg.isFixed) await db.update(t.itineraryItems).set({ ...values, dayId: day.id }).where(eq(t.itineraryItems.id, existing.id)).run();
   } else {
-    const count = db.select().from(t.itineraryItems).where(eq(t.itineraryItems.dayId, day.id)).all().length;
-    db.insert(t.itineraryItems).values({ tripId, dayId: day.id, sort: count, type: "transport", transportLegId: legId, costVnd: 0, ...values }).run();
+    const count = (await db.select().from(t.itineraryItems).where(eq(t.itineraryItems.dayId, day.id)).all()).length;
+    await db.insert(t.itineraryItems).values({ tripId, dayId: day.id, sort: count, type: "transport", transportLegId: legId, costVnd: 0, ...values }).run();
   }
 }
 
@@ -257,23 +257,23 @@ export async function saveTransportLeg(tripId: string, legId: string | null, inp
   return run(async () => {
     const v = legInput.parse(input);
     const user = await requireUser();
-    const { member } = assertMember(tripId, user.id);
+    const { member } = await assertMember(tripId, user.id);
     const arriveAt = v.arriveAt ?? computeArrival(v.departAt, v.durationMin);
-    const values = { ...v, arriveAt, participants: cleanParticipants(tripId, v.participants) };
+    const values = { ...v, arriveAt, participants: await cleanParticipants(tripId, v.participants) };
     let id = legId;
     if (legId) {
-      const leg = db.select().from(t.transportLegs).where(and(eq(t.transportLegs.id, legId), eq(t.transportLegs.tripId, tripId))).get();
+      const leg = await db.select().from(t.transportLegs).where(and(eq(t.transportLegs.id, legId), eq(t.transportLegs.tripId, tripId))).get();
       if (!leg) throw new UserError("Transport not found.");
       if (leg.isFixed && !opts.confirmFixedChange)
         throw new UserError("This is a booked international flight. Confirm that the booking has really changed to edit it.");
       if (leg.isFixed && member.role === "member") throw new UserError("Only the owner or an editor can change a booked flight.");
-      db.update(t.transportLegs).set(values).where(eq(t.transportLegs.id, legId)).run();
+      await db.update(t.transportLegs).set(values).where(eq(t.transportLegs.id, legId)).run();
     } else {
-      id = db.insert(t.transportLegs).values({ tripId, ...values }).returning({ id: t.transportLegs.id }).get().id;
+      id = (await db.insert(t.transportLegs).values({ tripId, ...values }).returning({ id: t.transportLegs.id }).get())!.id;
     }
     // A confirmed change to a booked flight also moves its itinerary marker.
-    syncLegItem(tripId, id!, { updateFixed: !!opts.confirmFixedChange });
-    touch(tripId);
+    await syncLegItem(tripId, id!, { updateFixed: !!opts.confirmFixedChange });
+    await touch(tripId);
     return { legId: id! };
   });
 }
@@ -281,12 +281,12 @@ export async function saveTransportLeg(tripId: string, legId: string | null, inp
 export async function deleteTransportLeg(legId: string) {
   return run(async () => {
     const user = await requireUser();
-    const leg = db.select().from(t.transportLegs).where(eq(t.transportLegs.id, legId)).get();
+    const leg = await db.select().from(t.transportLegs).where(eq(t.transportLegs.id, legId)).get();
     if (!leg) return {};
-    assertMember(leg.tripId, user.id);
+    await assertMember(leg.tripId, user.id);
     if (leg.isFixed) throw new UserError("Booked international flights can't be deleted here.");
-    db.delete(t.transportLegs).where(eq(t.transportLegs.id, legId)).run();
-    touch(leg.tripId);
+    await db.delete(t.transportLegs).where(eq(t.transportLegs.id, legId)).run();
+    await touch(leg.tripId);
     return {};
   });
 }
@@ -314,16 +314,16 @@ export async function saveStay(tripId: string, stayId: string | null, input: z.i
   return run(async () => {
     const v = staySchema.parse(input);
     const user = await requireUser();
-    assertMember(tripId, user.id);
-    const values = { ...v, participants: cleanParticipants(tripId, v.participants) };
+    await assertMember(tripId, user.id);
+    const values = { ...v, participants: await cleanParticipants(tripId, v.participants) };
     if (stayId) {
-      const s = db.select().from(t.accommodations).where(and(eq(t.accommodations.id, stayId), eq(t.accommodations.tripId, tripId))).get();
+      const s = await db.select().from(t.accommodations).where(and(eq(t.accommodations.id, stayId), eq(t.accommodations.tripId, tripId))).get();
       if (!s) throw new UserError("Stay not found.");
-      db.update(t.accommodations).set(values).where(eq(t.accommodations.id, stayId)).run();
+      await db.update(t.accommodations).set(values).where(eq(t.accommodations.id, stayId)).run();
     } else {
-      stayId = db.insert(t.accommodations).values({ tripId, ...values }).returning({ id: t.accommodations.id }).get().id;
+      stayId = (await db.insert(t.accommodations).values({ tripId, ...values }).returning({ id: t.accommodations.id }).get())!.id;
     }
-    touch(tripId);
+    await touch(tripId);
     return { stayId };
   });
 }
@@ -331,11 +331,11 @@ export async function saveStay(tripId: string, stayId: string | null, input: z.i
 export async function deleteStay(stayId: string) {
   return run(async () => {
     const user = await requireUser();
-    const s = db.select().from(t.accommodations).where(eq(t.accommodations.id, stayId)).get();
+    const s = await db.select().from(t.accommodations).where(eq(t.accommodations.id, stayId)).get();
     if (!s) return {};
-    assertMember(s.tripId, user.id);
-    db.delete(t.accommodations).where(eq(t.accommodations.id, stayId)).run();
-    touch(s.tripId);
+    await assertMember(s.tripId, user.id);
+    await db.delete(t.accommodations).where(eq(t.accommodations.id, stayId)).run();
+    await touch(s.tripId);
     return {};
   });
 }
@@ -358,19 +358,19 @@ export async function saveExpense(tripId: string, expenseId: string | null, inpu
   return run(async () => {
     const v = expenseSchema.parse(input);
     const user = await requireUser();
-    const { member, trip } = assertMember(tripId, user.id);
-    if (!db.select().from(t.budgetCategories).where(eq(t.budgetCategories.slug, v.categorySlug)).get()) throw new UserError("Unknown budget category.");
+    const { member, trip } = await assertMember(tripId, user.id);
+    if (!await db.select().from(t.budgetCategories).where(eq(t.budgetCategories.slug, v.categorySlug)).get()) throw new UserError("Unknown budget category.");
     if (v.date && (v.date < trip.startDate || v.date > trip.endDate)) throw new UserError("Pick a date within the trip, or leave the date empty.");
-    const values = { ...v, participants: cleanParticipants(tripId, v.participants) };
+    const values = { ...v, participants: await cleanParticipants(tripId, v.participants) };
     if (expenseId) {
-      const e = db.select().from(t.expenses).where(and(eq(t.expenses.id, expenseId), eq(t.expenses.tripId, tripId))).get();
+      const e = await db.select().from(t.expenses).where(and(eq(t.expenses.id, expenseId), eq(t.expenses.tripId, tripId))).get();
       if (!e) throw new UserError("Expense not found.");
       if (e.createdBy !== user.id && member.role === "member") throw new UserError("Only the person who added this expense, an editor or the owner can change it.");
-      db.update(t.expenses).set(values).where(eq(t.expenses.id, expenseId)).run();
+      await db.update(t.expenses).set(values).where(eq(t.expenses.id, expenseId)).run();
     } else {
-      expenseId = db.insert(t.expenses).values({ tripId, ...values, createdBy: user.id }).returning({ id: t.expenses.id }).get().id;
+      expenseId = (await db.insert(t.expenses).values({ tripId, ...values, createdBy: user.id }).returning({ id: t.expenses.id }).get())!.id;
     }
-    touch(tripId);
+    await touch(tripId);
     return { expenseId };
   });
 }
@@ -378,12 +378,12 @@ export async function saveExpense(tripId: string, expenseId: string | null, inpu
 export async function deleteExpense(expenseId: string) {
   return run(async () => {
     const user = await requireUser();
-    const e = db.select().from(t.expenses).where(eq(t.expenses.id, expenseId)).get();
+    const e = await db.select().from(t.expenses).where(eq(t.expenses.id, expenseId)).get();
     if (!e) return {};
-    const { member } = assertMember(e.tripId, user.id);
+    const { member } = await assertMember(e.tripId, user.id);
     if (e.createdBy !== user.id && member.role === "member") throw new UserError("Only the person who added this expense, an editor or the owner can delete it.");
-    db.delete(t.expenses).where(eq(t.expenses.id, expenseId)).run();
-    touch(e.tripId);
+    await db.delete(t.expenses).where(eq(t.expenses.id, expenseId)).run();
+    await touch(e.tripId);
     return {};
   });
 }
@@ -413,7 +413,7 @@ export async function updateBudgetSettings(
       })
       .parse(input);
     const user = await requireUser();
-    const { trip } = assertMember(tripId, user.id, ["owner", "editor"]);
+    const { trip } = await assertMember(tripId, user.id, ["owner", "editor"]);
     const settings = { ...trip.settings };
     if (v.insurancePerPersonVnd !== undefined) settings.insurancePerPersonVnd = v.insurancePerPersonVnd;
     if (v.simPerPersonVnd !== undefined) settings.simPerPersonVnd = v.simPerPersonVnd;
@@ -427,7 +427,7 @@ export async function updateBudgetSettings(
       }
       settings.baselines = { ...(settings.baselines ?? {}), overrides: current };
     }
-    db.update(t.trips)
+    await db.update(t.trips)
       .set({
         settings,
         ...(v.scenario ? { scenario: v.scenario } : {}),
@@ -435,7 +435,7 @@ export async function updateBudgetSettings(
       })
       .where(eq(t.trips.id, tripId))
       .run();
-    touch(tripId);
+    await touch(tripId);
     return {};
   });
 }
@@ -446,42 +446,42 @@ export async function updateBudgetSettings(
 export async function applyRouteTemplate(tripId: string, slug: string) {
   return run(async () => {
     const user = await requireUser();
-    const { trip } = assertMember(tripId, user.id, ["owner", "editor"]);
+    const { trip } = await assertMember(tripId, user.id, ["owner", "editor"]);
     const tpl = routeTemplates.find((r) => r.slug === slug);
     if (!tpl) throw new UserError("Route template not found.");
     // The template is a dated plan: only use the days and transfers that fall inside this trip.
     const inTrip = (date: string) => date >= trip.startDate && date <= trip.endDate;
     if (!tpl.days.some((d) => inTrip(d.date)))
       throw new UserError(`This suggested route is planned for ${tpl.days[0]!.date} to ${tpl.days.at(-1)!.date}, which doesn't overlap your trip dates.`);
-    const destId = (s: string) => db.select({ id: t.destinations.id, name: t.destinations.name }).from(t.destinations).where(eq(t.destinations.slug, s)).get();
+    const destId = async (s: string) => await db.select({ id: t.destinations.id, name: t.destinations.name }).from(t.destinations).where(eq(t.destinations.slug, s)).get();
     let daysFilled = 0,
       legsAdded = 0;
-    db.transaction((tx) => {
+    await db.transaction(async (tx) => {
       for (const d of tpl.days) {
-        const day = tx.select().from(t.itineraryDays).where(and(eq(t.itineraryDays.tripId, tripId), eq(t.itineraryDays.date, d.date))).get();
+        const day = await tx.select().from(t.itineraryDays).where(and(eq(t.itineraryDays.tripId, tripId), eq(t.itineraryDays.date, d.date))).get();
         if (!day) continue;
-        const dest = destId(d.destination);
+        const dest = await destId(d.destination);
         const patch: { destinationId?: string; title?: string } = {};
         if (!day.destinationId && dest) patch.destinationId = dest.id;
         if (!day.title) patch.title = d.title;
         if (Object.keys(patch).length) {
-          tx.update(t.itineraryDays).set(patch).where(eq(t.itineraryDays.id, day.id)).run();
+          await tx.update(t.itineraryDays).set(patch).where(eq(t.itineraryDays.id, day.id)).run();
           daysFilled++;
         }
       }
     });
     for (const l of tpl.legs) {
       if (!inTrip(l.departAt.slice(0, 10))) continue;
-      const from = destId(l.from);
-      const to = destId(l.to);
+      const from = await destId(l.from);
+      const to = await destId(l.to);
       if (!from || !to) continue;
-      const dup = db
+      const dup = await db
         .select()
         .from(t.transportLegs)
         .where(and(eq(t.transportLegs.tripId, tripId), eq(t.transportLegs.fromDestinationId, from.id), eq(t.transportLegs.toDestinationId, to.id)))
         .get();
       if (dup) continue;
-      const leg = db
+      const leg = (await db
         .insert(t.transportLegs)
         .values({
           tripId,
@@ -501,11 +501,11 @@ export async function applyRouteTemplate(tripId: string, slug: string) {
           notes: "Added from a suggested route. Times and prices are planning estimates, not live schedules or fares.",
         })
         .returning({ id: t.transportLegs.id })
-        .get();
-      syncLegItem(tripId, leg.id);
+        .get())!;
+      await syncLegItem(tripId, leg.id);
       legsAdded++;
     }
-    touch(tripId);
+    await touch(tripId);
     return { daysFilled, legsAdded };
   });
 }

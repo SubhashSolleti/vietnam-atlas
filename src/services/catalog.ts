@@ -46,26 +46,29 @@ interface Snapshot {
 declare global {
   // eslint-disable-next-line no-var
   var __atlasSnapshot: Snapshot | undefined;
+  // eslint-disable-next-line no-var
+  var __atlasSnapshotBuilding: Promise<Snapshot> | undefined;
 }
 
 export function invalidateCatalog() {
   globalThis.__atlasSnapshot = undefined;
+  globalThis.__atlasSnapshotBuilding = undefined;
 }
 
-function buildSnapshot(): Snapshot {
-  const regionRows = db.select().from(t.regions).orderBy(asc(t.regions.sort)).all();
+async function buildSnapshot(): Promise<Snapshot> {
+  const regionRows = await db.select().from(t.regions).orderBy(asc(t.regions.sort)).all();
   const regionById = new Map(regionRows.map((r) => [r.id, r]));
-  const destRows = db.select().from(t.destinations).where(eq(t.destinations.status, "published")).all();
+  const destRows = await db.select().from(t.destinations).where(eq(t.destinations.status, "published")).all();
   const destById = new Map(destRows.map((d) => [d.id, d]));
-  const actRows = db
+  const actRows = (await db
     .select()
     .from(t.activities)
     .where(eq(t.activities.status, "published"))
-    .all()
+    .all())
     .filter((a) => destById.has(a.destinationId));
   const actIds = actRows.map((a) => a.id);
 
-  const catRows = db
+  const catRows = await db
     .select({ activityId: t.activityCategoryLinks.activityId, slug: t.activityCategories.slug, kind: t.activityCategories.kind })
     .from(t.activityCategoryLinks)
     .innerJoin(t.activityCategories, eq(t.activityCategories.id, t.activityCategoryLinks.categoryId))
@@ -77,23 +80,23 @@ function buildSnapshot(): Snapshot {
     cats.set(c.activityId, e);
   }
   const prices = new Map(
-    db
+    (await db
       .select()
       .from(t.activityPrices)
       .where(eq(t.activityPrices.isCurrent, true))
-      .all()
+      .all())
       .map((p) => [p.activityId, p]),
   );
-  const attrRows = db.select({ id: t.attractions.id, lat: t.attractions.lat, lng: t.attractions.lng }).from(t.attractions).all();
+  const attrRows = await db.select({ id: t.attractions.id, lat: t.attractions.lat, lng: t.attractions.lng }).from(t.attractions).all();
   const attrById = new Map(attrRows.map((a) => [a.id, a]));
 
-  const destImages = imagesFor("destination", destRows.map((d) => d.id));
-  const actImages = imagesFor("activity", actIds);
-  const attrImages = imagesFor("attraction", attrRows.map((a) => a.id));
-  const regionImages = imagesFor("region", regionRows.map((r) => r.id));
+  const destImages = await imagesFor("destination", destRows.map((d) => d.id));
+  const actImages = await imagesFor("activity", actIds);
+  const attrImages = await imagesFor("attraction", attrRows.map((a) => a.id));
+  const regionImages = await imagesFor("region", regionRows.map((r) => r.id));
 
   const attrDest = new Map(
-    db.select({ id: t.attractions.id, destinationId: t.attractions.destinationId }).from(t.attractions).where(eq(t.attractions.status, "published")).all().map((r) => [r.id, r.destinationId]),
+    (await db.select({ id: t.attractions.id, destinationId: t.attractions.destinationId }).from(t.attractions).where(eq(t.attractions.status, "published")).all()).map((r) => [r.id, r.destinationId]),
   );
   const cardImages = assignActivityImages(actRows, actImages, attrImages, destImages, attrDest);
 
@@ -207,42 +210,49 @@ function buildSnapshot(): Snapshot {
   return { destinations, activities, regions, builtAt: Date.now() };
 }
 
-export function getCatalog(): Snapshot {
+/**
+ * The published catalogue, cached per server instance. On Vercel several instances run at once, so an admin edit
+ * refreshes the instance that made it immediately and the others within a minute.
+ */
+export async function getCatalog(): Promise<Snapshot> {
   const s = globalThis.__atlasSnapshot;
-  // Rebuild at most every 5 minutes as a safety net; admin writes invalidate immediately.
-  if (s && Date.now() - s.builtAt < 5 * 60_000) return s;
-  return (globalThis.__atlasSnapshot = buildSnapshot());
+  if (s && Date.now() - s.builtAt < 60_000) return s;
+  // Concurrent requests share one rebuild.
+  globalThis.__atlasSnapshotBuilding ??= buildSnapshot()
+    .then((snap) => (globalThis.__atlasSnapshot = snap))
+    .finally(() => (globalThis.__atlasSnapshotBuilding = undefined));
+  return globalThis.__atlasSnapshotBuilding;
 }
 
 /* ───────────── Detail queries ───────────── */
 
-export function getDestinationBySlug(slug: string, opts: { includeUnpublished?: boolean } = {}) {
-  const d = db.select().from(t.destinations).where(eq(t.destinations.slug, slug)).get();
+export async function getDestinationBySlug(slug: string, opts: { includeUnpublished?: boolean } = {}) {
+  const d = await db.select().from(t.destinations).where(eq(t.destinations.slug, slug)).get();
   if (!d || (!opts.includeUnpublished && d.status !== "published")) return null;
-  const region = db.select().from(t.regions).where(eq(t.regions.id, d.regionId)).get()!;
-  const parent = d.parentId ? db.select().from(t.destinations).where(eq(t.destinations.id, d.parentId)).get() : null;
-  const children = db
+  const region = (await db.select().from(t.regions).where(eq(t.regions.id, d.regionId)).get())!;
+  const parent = d.parentId ? await db.select().from(t.destinations).where(eq(t.destinations.id, d.parentId)).get() : null;
+  const children = await db
     .select()
     .from(t.destinations)
     .where(and(eq(t.destinations.parentId, d.id), eq(t.destinations.status, "published")))
     .all();
-  const attractions = db
+  const attractions = await db
     .select()
     .from(t.attractions)
     .where(and(eq(t.attractions.destinationId, d.id), eq(t.attractions.status, "published")))
     .all();
-  const images = imagesFor("destination", [d.id]).get(d.id) ?? [];
-  const attractionImages = imagesFor("attraction", attractions.map((a) => a.id));
-  const nearby = db
+  const images = (await imagesFor("destination", [d.id])).get(d.id) ?? [];
+  const attractionImages = await imagesFor("attraction", attractions.map((a) => a.id));
+  const nearby = await db
     .select({ rel: t.destinationRelationships, dest: t.destinations })
     .from(t.destinationRelationships)
     .innerJoin(t.destinations, eq(t.destinations.id, t.destinationRelationships.toId))
     .where(and(eq(t.destinationRelationships.fromId, d.id), eq(t.destinations.status, "published")))
     .all();
-  const catalog = getCatalog();
+  const catalog = await getCatalog();
   const scope = new Set([d.id, ...children.map((c) => c.id)]);
   const activities = catalog.activities.filter((a) => scope.has(a.destinationId));
-  const sources = sourcesFor("destination", [d.id]);
+  const sources = await sourcesFor("destination", [d.id]);
   return {
     destination: d,
     region,
@@ -259,48 +269,48 @@ export function getDestinationBySlug(slug: string, opts: { includeUnpublished?: 
   };
 }
 
-export function getAttractionBySlug(slug: string) {
-  const a = db.select().from(t.attractions).where(eq(t.attractions.slug, slug)).get();
+export async function getAttractionBySlug(slug: string) {
+  const a = await db.select().from(t.attractions).where(eq(t.attractions.slug, slug)).get();
   if (!a || a.status !== "published") return null;
-  const d = db.select().from(t.destinations).where(eq(t.destinations.id, a.destinationId)).get()!;
-  const images = imagesFor("attraction", [a.id]).get(a.id) ?? [];
+  const d = (await db.select().from(t.destinations).where(eq(t.destinations.id, a.destinationId)).get())!;
+  const images = (await imagesFor("attraction", [a.id])).get(a.id) ?? [];
   const linked = new Set(
-    db.select({ id: t.activities.id }).from(t.activities).where(eq(t.activities.attractionId, a.id)).all().map((r) => r.id),
+    (await db.select({ id: t.activities.id }).from(t.activities).where(eq(t.activities.attractionId, a.id)).all()).map((r) => r.id),
   );
-  const activities = getCatalog().activities.filter((x) => linked.has(x.id));
-  return { attraction: a, destination: d, images, activities, sources: sourcesFor("attraction", [a.id]) };
+  const activities = (await getCatalog()).activities.filter((x) => linked.has(x.id));
+  return { attraction: a, destination: d, images, activities, sources: await sourcesFor("attraction", [a.id]) };
 }
 
-export function getActivityBySlug(slug: string, opts: { includeUnpublished?: boolean } = {}) {
-  const a = db.select().from(t.activities).where(eq(t.activities.slug, slug)).get();
+export async function getActivityBySlug(slug: string, opts: { includeUnpublished?: boolean } = {}) {
+  const a = await db.select().from(t.activities).where(eq(t.activities.slug, slug)).get();
   if (!a || (!opts.includeUnpublished && a.status !== "published")) return null;
-  const d = db.select().from(t.destinations).where(eq(t.destinations.id, a.destinationId)).get()!;
-  const region = db.select().from(t.regions).where(eq(t.regions.id, d.regionId)).get()!;
-  const attraction = a.attractionId ? db.select().from(t.attractions).where(eq(t.attractions.id, a.attractionId)).get() : null;
-  const price = db
+  const d = (await db.select().from(t.destinations).where(eq(t.destinations.id, a.destinationId)).get())!;
+  const region = (await db.select().from(t.regions).where(eq(t.regions.id, d.regionId)).get())!;
+  const attraction = a.attractionId ? await db.select().from(t.attractions).where(eq(t.attractions.id, a.attractionId)).get() : null;
+  const price = await db
     .select()
     .from(t.activityPrices)
     .where(and(eq(t.activityPrices.activityId, a.id), eq(t.activityPrices.isCurrent, true)))
     .get();
-  const cats = db
+  const cats = await db
     .select({ slug: t.activityCategories.slug, name: t.activityCategories.name, kind: t.activityCategories.kind })
     .from(t.activityCategoryLinks)
     .innerJoin(t.activityCategories, eq(t.activityCategories.id, t.activityCategoryLinks.categoryId))
     .where(eq(t.activityCategoryLinks.activityId, a.id))
     .all();
-  const own = imagesFor("activity", [a.id]).get(a.id) ?? [];
-  const attrImgs = attraction ? (imagesFor("attraction", [attraction.id]).get(attraction.id) ?? []) : [];
-  const destImgs = imagesFor("destination", [d.id]).get(d.id) ?? [];
-  const alts = db.select().from(t.activityAlternatives).where(eq(t.activityAlternatives.activityId, a.id)).all();
-  const catalog = getCatalog();
+  const own = (await imagesFor("activity", [a.id])).get(a.id) ?? [];
+  const attrImgs = attraction ? ((await imagesFor("attraction", [attraction.id])).get(attraction.id) ?? []) : [];
+  const destImgs = (await imagesFor("destination", [d.id])).get(d.id) ?? [];
+  const alts = await db.select().from(t.activityAlternatives).where(eq(t.activityAlternatives.activityId, a.id)).all();
+  const catalog = await getCatalog();
   const card = (id: string) => catalog.activities.find((x) => x.id === id);
-  const nearbyAttractions = db
+  const nearbyAttractions = await db
     .select()
     .from(t.attractions)
     .where(and(eq(t.attractions.destinationId, d.id), eq(t.attractions.status, "published"), a.attractionId ? ne(t.attractions.id, a.attractionId) : undefined))
     .limit(6)
     .all();
-  const reviews = db
+  const reviews = await db
     .select({ r: t.reviews, name: t.users.displayName })
     .from(t.reviews)
     .innerJoin(t.users, eq(t.users.id, t.reviews.userId))
@@ -322,19 +332,18 @@ export function getActivityBySlug(slug: string, opts: { includeUnpublished?: boo
       .slice(0, 8),
     nearbyAttractions,
     reviews,
-    sources: sourcesFor("activity", [a.id]),
+    sources: await sourcesFor("activity", [a.id]),
     card: card(a.id) ?? null,
   };
 }
 
-export function sourcesFor(entityType: string, ids: string[]) {
-  if (!ids.length) return [];
-  return db
+export async function sourcesFor(entityType: string, ids: string[]) {
+  return (ids.length ? await db
     .select({ v: t.sourceVerifications, s: t.sources })
     .from(t.sourceVerifications)
     .innerJoin(t.sources, eq(t.sources.id, t.sourceVerifications.sourceId))
     .where(and(eq(t.sourceVerifications.entityType, entityType), inArray(t.sourceVerifications.entityId, ids)))
-    .all()
+    .all() : [])
     .map(({ v, s }) => ({
       id: v.id,
       entityId: v.entityId,
@@ -367,9 +376,9 @@ declare global {
   var __atlasSearchIndex: { builtAt: number; docs: (Omit<SearchHit, "score"> & { text: string; boost: number })[] } | undefined;
 }
 
-function searchIndex() {
+async function searchIndex() {
   const cached = globalThis.__atlasSearchIndex;
-  const snap = getCatalog();
+  const snap = await getCatalog();
   if (cached && cached.builtAt >= snap.builtAt) return cached.docs;
   const docs: (Omit<SearchHit, "score"> & { text: string; boost: number })[] = [];
   for (const r of snap.regions)
@@ -394,7 +403,7 @@ function searchIndex() {
       text: normalise(`${a.title} ${a.destinationName} ${a.summary} ${a.categories.join(" ")}`),
       boost: 2,
     });
-  const attrs = db
+  const attrs = await db
     .select({ a: t.attractions, d: t.destinations })
     .from(t.attractions)
     .innerJoin(t.destinations, eq(t.destinations.id, t.attractions.destinationId))
@@ -402,7 +411,7 @@ function searchIndex() {
     .all();
   for (const { a, d } of attrs)
     docs.push({ kind: "attraction", title: a.name, subtitle: `Attraction · ${d.name}`, href: `/attractions/${a.slug}`, text: normalise(`${a.name} ${a.localName ?? ""} ${d.name} ${a.kind}`), boost: 3 });
-  const dests = db.select({ slug: t.destinations.slug, name: t.destinations.name, food: t.destinations.food }).from(t.destinations).where(eq(t.destinations.status, "published")).all();
+  const dests = await db.select({ slug: t.destinations.slug, name: t.destinations.name, food: t.destinations.food }).from(t.destinations).where(eq(t.destinations.status, "published")).all();
   for (const d of dests)
     for (const dish of d.food.dishes)
       docs.push({
@@ -413,7 +422,7 @@ function searchIndex() {
         text: normalise(`${dish.name} ${dish.localName ?? ""} ${dish.description} food dish`),
         boost: 1,
       });
-  const guides = db
+  const guides = await db
     .select({ g: t.travelGuides, s: t.guideSections })
     .from(t.travelGuides)
     .innerJoin(t.guideSections, eq(t.guideSections.id, t.travelGuides.sectionId))
@@ -432,11 +441,11 @@ function searchIndex() {
   return docs;
 }
 
-export function search(q: string, opts: { kinds?: SearchKind[]; limit?: number } = {}): SearchHit[] {
+export async function search(q: string, opts: { kinds?: SearchKind[]; limit?: number } = {}): Promise<SearchHit[]> {
   const terms = normalise(q).split(/\s+/).filter((x) => x.length > 0);
   if (!terms.length) return [];
   const hits: SearchHit[] = [];
-  for (const d of searchIndex()) {
+  for (const d of await searchIndex()) {
     if (opts.kinds?.length && !opts.kinds.includes(d.kind)) continue;
     if (!terms.every((term) => d.text.includes(term))) continue;
     const title = normalise(d.title);

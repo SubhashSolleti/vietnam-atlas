@@ -42,15 +42,15 @@ export default async function GroupWorkspace({ params, searchParams }: { params:
   if (!user) redirect("/group");
   let access;
   try {
-    access = assertMember(id, user.id);
+    access = await assertMember(id, user.id);
   } catch (e) {
     if (e instanceof TripAccessError) notFound();
     throw e;
   }
   const { trip, member } = access;
-  const ws = tripWorkspace(trip.id);
+  const ws = await tripWorkspace(trip.id);
   const canManage = member.role === "owner" || member.role === "editor";
-  const { result: budget, fx } = tripBudget(trip);
+  const { result: budget, fx } = await tripBudget(trip);
   const remaining = budget.remainingPerMember ? Math.min(...Object.values(budget.remainingPerMember)) : null;
   const consensus = consensusFor(trip, ws, remaining);
   // Anonymous voting: individual votes never leave the server, only tallies, your own vote, and (for owners/editors)
@@ -66,8 +66,8 @@ export default async function GroupWorkspace({ params, searchParams }: { params:
   const days = daysBetween(trip.startDate, trip.endDate) + 1;
   const joined = ws.members.filter((m) => m.userId).length;
   const prefsDone = ws.preferences.filter((p) => p.interests.length > 0).length;
-  const catalog = getCatalog();
-  const allTrips = db.select({ id: t.trips.id, name: t.trips.name }).from(t.tripMembers).innerJoin(t.trips, eq(t.trips.id, t.tripMembers.tripId)).where(eq(t.tripMembers.userId, user.id)).all();
+  const catalog = await getCatalog();
+  const allTrips = await db.select({ id: t.trips.id, name: t.trips.name }).from(t.tripMembers).innerJoin(t.trips, eq(t.trips.id, t.tripMembers.tripId)).where(eq(t.tripMembers.userId, user.id)).all();
 
   return (
     <div className="container-x pt-8">

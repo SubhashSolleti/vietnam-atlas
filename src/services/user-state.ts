@@ -17,23 +17,23 @@ export interface UserState {
 export async function getUserState(user: CurrentUser | null): Promise<UserState> {
   if (!user) return { user: null, saved: {}, compareIds: [], trips: [], activeTripId: null, activeTripCandidates: {} };
   const saved = Object.fromEntries(
-    db
+    (await db
       .select()
       .from(t.wishlistItems)
       .where(eq(t.wishlistItems.userId, user.id))
-      .all()
+      .all())
       .map((w) => [`${w.entityType}:${w.entityId}`, { id: w.id, state: w.state, note: w.note, priority: w.priority }]),
   );
-  const compareIds = db.select({ id: t.comparisons.activityId }).from(t.comparisons).where(eq(t.comparisons.userId, user.id)).all().map((c) => c.id);
-  const trips = myTrips(user.id).map((x) => ({ id: x.trip.id, name: x.trip.name, role: x.member.role, memberId: x.member.id }));
+  const compareIds = (await db.select({ id: t.comparisons.activityId }).from(t.comparisons).where(eq(t.comparisons.userId, user.id)).all()).map((c) => c.id);
+  const trips = (await myTrips(user.id)).map((x) => ({ id: x.trip.id, name: x.trip.name, role: x.member.role, memberId: x.member.id }));
   const active = await resolveActiveTrip(user.id);
   const activeTripCandidates = active
     ? Object.fromEntries(
-        db
+        (await db
           .select({ a: t.tripCandidates.activityId, s: t.tripCandidates.status })
           .from(t.tripCandidates)
           .where(eq(t.tripCandidates.tripId, active.trip.id))
-          .all()
+          .all())
           .map((c) => [c.a, c.s]),
       )
     : {};

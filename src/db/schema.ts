@@ -1,23 +1,30 @@
 /**
- * Vietnam Atlas relational schema (SQLite via Drizzle).
+ * Vietnam Atlas relational schema (Postgres on Supabase, via Drizzle).
  *
  * Conventions
- *  - UUID text primary keys, ISO-8601 text timestamps.
+ *  - UUID text primary keys, ISO-8601 text timestamps (compared as strings throughout the app).
+ *  - Money in VND is bigint (amounts can exceed 2^31); INR budgets are integers.
+ *  - Row Level Security is enabled on every table with no public policies (see the RLS migration): only the
+ *    server's own Postgres connection reads or writes, so Supabase's Data API exposes nothing.
  *  - Small nested lists (bullets, packing lists) are JSON columns on their owning row;
  *    everything that is queried, filtered, joined or edited independently is its own table.
  *  - Money is stored as integer VND. INR is always derived from the FX settings at read time.
  */
 import { sql } from "drizzle-orm";
 import {
+  bigint,
+  boolean,
   check,
+  customType,
+  doublePrecision,
   index,
   integer,
+  jsonb,
+  pgTable,
   primaryKey,
-  real,
-  sqliteTable,
   text,
   uniqueIndex,
-} from "drizzle-orm/sqlite-core";
+} from "drizzle-orm/pg-core";
 
 const id = () =>
   text("id")
@@ -26,11 +33,14 @@ const id = () =>
 const now = () => new Date().toISOString();
 const createdAt = () => text("created_at").notNull().$defaultFn(now);
 const updatedAt = () => text("updated_at").notNull().$defaultFn(now).$onUpdateFn(now);
-const json = <T>(name: string) => text(name, { mode: "json" }).$type<T>();
+const json = <T>(name: string) => jsonb(name).$type<T>();
+/** VND amounts: 64-bit, read back as JS numbers (well within Number.MAX_SAFE_INTEGER). */
+const vnd = (name: string) => bigint(name, { mode: "number" });
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" });
 
 /* ───────────────────────────── Identity ───────────────────────────── */
 
-export const users = sqliteTable(
+export const users = pgTable(
   "users",
   {
     id: id(),
@@ -42,7 +52,7 @@ export const users = sqliteTable(
     role: text("role", { enum: ["super_admin", "content_editor", "member", "visitor"] })
       .notNull()
       .default("visitor"),
-    isGuest: integer("is_guest", { mode: "boolean" }).notNull().default(true),
+    isGuest: boolean("is_guest").notNull().default(true),
     theme: text("theme", { enum: ["system", "light", "dark"] }).notNull().default("system"),
     disabledAt: text("disabled_at"),
     createdAt: createdAt(),
@@ -51,7 +61,7 @@ export const users = sqliteTable(
   (t) => [uniqueIndex("users_email_uq").on(t.email)],
 );
 
-export const sessions = sqliteTable(
+export const sessions = pgTable(
   "sessions",
   {
     id: text("id").primaryKey(), // sha256 of the cookie token
@@ -64,14 +74,14 @@ export const sessions = sqliteTable(
   (t) => [index("sessions_user_idx").on(t.userId)],
 );
 
-export const userProfiles = sqliteTable("user_profiles", {
+export const userProfiles = pgTable("user_profiles", {
   userId: text("user_id")
     .primaryKey()
     .references(() => users.id, { onDelete: "cascade" }),
   headline: text("headline"),
   introduction: text("introduction"),
   linkedinUrl: text("linkedin_url"),
-  interests: json<string[]>("interests").notNull().default(sql`'[]'`),
+  interests: json<string[]>("interests").notNull().default(sql`'[]'::jsonb`),
   updatedAt: updatedAt(),
 });
 
@@ -79,7 +89,7 @@ export const userProfiles = sqliteTable("user_profiles", {
 
 export const publishStatus = ["draft", "published", "archived"] as const;
 
-export const regions = sqliteTable("regions", {
+export const regions = pgTable("regions", {
   id: id(),
   slug: text("slug").notNull().unique(),
   name: text("name").notNull(),
@@ -92,7 +102,7 @@ export const regions = sqliteTable("regions", {
   imageQuery: text("image_query"),
 });
 
-export const destinations = sqliteTable(
+export const destinations = pgTable(
   "destinations",
   {
     id: id(),
@@ -106,8 +116,8 @@ export const destinations = sqliteTable(
     parentId: text("parent_id"),
     province: text("province").notNull(),
     formerProvince: text("former_province"),
-    lat: real("lat").notNull(),
-    lng: real("lng").notNull(),
+    lat: doublePrecision("lat").notNull(),
+    lng: doublePrecision("lng").notNull(),
     tagline: text("tagline").notNull(),
     summary: text("summary").notNull(),
     intro: text("intro").notNull(),
@@ -152,7 +162,7 @@ export const destinations = sqliteTable(
       payments: string;
       accessibility: string;
     }>("practical").notNull(),
-    featured: integer("featured", { mode: "boolean" }).notNull().default(false),
+    featured: boolean("featured").notNull().default(false),
     status: text("status", { enum: publishStatus }).notNull().default("published"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -165,7 +175,7 @@ export const destinations = sqliteTable(
   ],
 );
 
-export const destinationRelationships = sqliteTable(
+export const destinationRelationships = pgTable(
   "destination_relationships",
   {
     fromId: text("from_id")
@@ -180,7 +190,7 @@ export const destinationRelationships = sqliteTable(
   (t) => [primaryKey({ columns: [t.fromId, t.toId] })],
 );
 
-export const attractions = sqliteTable(
+export const attractions = pgTable(
   "attractions",
   {
     id: id(),
@@ -191,16 +201,16 @@ export const attractions = sqliteTable(
     name: text("name").notNull(),
     localName: text("local_name"),
     kind: text("kind").notNull(),
-    lat: real("lat"),
-    lng: real("lng"),
+    lat: doublePrecision("lat"),
+    lng: doublePrecision("lng"),
     description: text("description").notNull(),
     whatToSee: json<string[]>("what_to_see").notNull(),
     whatToDo: json<string[]>("what_to_do").notNull(),
     openingHoursText: text("opening_hours_text").notNull(),
     openingHoursStatus: text("opening_hours_status").notNull(),
     feeText: text("fee_text").notNull(),
-    feeMinVnd: integer("fee_min_vnd"),
-    feeMaxVnd: integer("fee_max_vnd"),
+    feeMinVnd: vnd("fee_min_vnd"),
+    feeMaxVnd: vnd("fee_max_vnd"),
     feeStatus: text("fee_status").notNull(),
     visitDuration: text("visit_duration").notNull(),
     accessibility: text("accessibility").notNull(),
@@ -208,7 +218,7 @@ export const attractions = sqliteTable(
     seasonality: text("seasonality").notNull(),
     officialUrl: text("official_url"),
     booking: text("booking").notNull(),
-    isFree: integer("is_free", { mode: "boolean" }).notNull().default(false),
+    isFree: boolean("is_free").notNull().default(false),
     status: text("status", { enum: publishStatus }).notNull().default("published"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -217,7 +227,7 @@ export const attractions = sqliteTable(
   (t) => [uniqueIndex("attractions_slug_uq").on(t.slug), index("attractions_dest_idx").on(t.destinationId)],
 );
 
-export const activityCategories = sqliteTable("activity_categories", {
+export const activityCategories = pgTable("activity_categories", {
   id: id(),
   slug: text("slug").notNull().unique(),
   name: text("name").notNull(),
@@ -227,7 +237,7 @@ export const activityCategories = sqliteTable("activity_categories", {
   sort: integer("sort").notNull().default(0),
 });
 
-export const activities = sqliteTable(
+export const activities = pgTable(
   "activities",
   {
     id: id(),
@@ -245,7 +255,7 @@ export const activities = sqliteTable(
     steps: json<string[]>("steps").notNull(),
     durationBucket: text("duration_bucket").notNull(),
     durationText: text("duration_text").notNull(),
-    durationHours: real("duration_hours").notNull(),
+    durationHours: doublePrecision("duration_hours").notNull(),
     difficulty: text("difficulty").notNull(),
     intensity: integer("intensity").notNull(),
     minAge: text("min_age"),
@@ -255,7 +265,7 @@ export const activities = sqliteTable(
     months: text("months").notNull(),
     decemberStatus: text("december_status").notNull(),
     decemberNote: text("december_note").notNull(),
-    weatherDependent: integer("weather_dependent", { mode: "boolean" }).notNull(),
+    weatherDependent: boolean("weather_dependent").notNull(),
     minParticipants: text("min_participants"),
     suitability: json<string[]>("suitability").notNull(),
     groupNote: text("group_note").notNull(),
@@ -266,7 +276,7 @@ export const activities = sqliteTable(
     transport: text("transport").notNull(),
     accessibility: text("accessibility").notNull(),
     providerLinks: json<{ name: string; url: string }[]>("provider_links").notNull(),
-    featured: integer("featured", { mode: "boolean" }).notNull().default(false),
+    featured: boolean("featured").notNull().default(false),
     status: text("status", { enum: publishStatus }).notNull().default("published"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -281,7 +291,7 @@ export const activities = sqliteTable(
   ],
 );
 
-export const activityCategoryLinks = sqliteTable(
+export const activityCategoryLinks = pgTable(
   "activity_category_links",
   {
     activityId: text("activity_id")
@@ -294,15 +304,15 @@ export const activityCategoryLinks = sqliteTable(
   (t) => [primaryKey({ columns: [t.activityId, t.categoryId] }), index("acl_cat_idx").on(t.categoryId)],
 );
 
-export const activityPrices = sqliteTable(
+export const activityPrices = pgTable(
   "activity_prices",
   {
     id: id(),
     activityId: text("activity_id")
       .notNull()
       .references(() => activities.id, { onDelete: "cascade" }),
-    minVnd: integer("min_vnd").notNull(),
-    maxVnd: integer("max_vnd").notNull(),
+    minVnd: vnd("min_vnd").notNull(),
+    maxVnd: vnd("max_vnd").notNull(),
     unit: text("unit").notNull(),
     basis: text("basis").notNull(),
     status: text("status").notNull(),
@@ -315,18 +325,18 @@ export const activityPrices = sqliteTable(
     unitCapacity: integer("unit_capacity"),
     /** Experiences sharing a bundle are the same ticket/tour: a trip budget counts the bundle once. */
     ticketBundle: text("ticket_bundle"),
-    isCurrent: integer("is_current", { mode: "boolean" }).notNull().default(true),
+    isCurrent: boolean("is_current").notNull().default(true),
     verifiedAt: text("verified_at"),
     createdAt: createdAt(),
   },
   (t) => [
     index("prices_activity_idx").on(t.activityId),
-    uniqueIndex("prices_current_uq").on(t.activityId).where(sql`is_current = 1`),
+    uniqueIndex("prices_current_uq").on(t.activityId).where(sql`is_current`),
     check("prices_range_ck", sql`min_vnd >= 0 AND max_vnd >= min_vnd`),
   ],
 );
 
-export const activityAlternatives = sqliteTable(
+export const activityAlternatives = pgTable(
   "activity_alternatives",
   {
     activityId: text("activity_id")
@@ -342,7 +352,7 @@ export const activityAlternatives = sqliteTable(
 
 /* Media */
 
-export const media = sqliteTable("media", {
+export const media = pgTable("media", {
   id: id(),
   /** Public path under /public, e.g. /media/phu-quoc/hero.webp, or an https URL. */
   src: text("src").notNull(),
@@ -355,11 +365,11 @@ export const media = sqliteTable("media", {
   licenseUrl: text("license_url"),
   sourceUrl: text("source_url"),
   /** True when the image is a representative image, not of the exact operator/venue. */
-  representative: integer("representative", { mode: "boolean" }).notNull().default(false),
+  representative: boolean("representative").notNull().default(false),
   createdAt: createdAt(),
 });
 
-export const entityMedia = sqliteTable(
+export const entityMedia = pgTable(
   "entity_media",
   {
     id: id(),
@@ -376,7 +386,7 @@ export const entityMedia = sqliteTable(
 
 /* Sources & verification */
 
-export const sources = sqliteTable(
+export const sources = pgTable(
   "sources",
   {
     id: id(),
@@ -389,7 +399,7 @@ export const sources = sqliteTable(
   (t) => [uniqueIndex("sources_url_title_uq").on(t.url, t.title)],
 );
 
-export const sourceVerifications = sqliteTable(
+export const sourceVerifications = pgTable(
   "source_verifications",
   {
     id: id(),
@@ -409,7 +419,7 @@ export const sourceVerifications = sqliteTable(
 
 /* ───────────────────────── Personal wishlist ───────────────────────── */
 
-export const wishlistItems = sqliteTable(
+export const wishlistItems = pgTable(
   "wishlist_items",
   {
     id: id(),
@@ -433,7 +443,7 @@ export const wishlistItems = sqliteTable(
   ],
 );
 
-export const comparisons = sqliteTable(
+export const comparisons = pgTable(
   "comparisons",
   {
     userId: text("user_id")
@@ -458,7 +468,7 @@ export type TripSettings = {
   includeInternationalFlights?: boolean;
 };
 
-export const trips = sqliteTable(
+export const trips = pgTable(
   "trips",
   {
     id: id(),
@@ -474,7 +484,7 @@ export const trips = sqliteTable(
     votePrivacy: text("vote_privacy", { enum: ["named", "anonymous"] }).notNull().default("named"),
     inviteCode: text("invite_code").notNull(),
     description: text("description"),
-    settings: json<TripSettings>("settings").notNull().default(sql`'{}'`),
+    settings: json<TripSettings>("settings").notNull().default(sql`'{}'::jsonb`),
     createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -487,7 +497,7 @@ export const trips = sqliteTable(
   ],
 );
 
-export const tripMembers = sqliteTable(
+export const tripMembers = pgTable(
   "trip_members",
   {
     id: id(),
@@ -512,15 +522,15 @@ export const tripMembers = sqliteTable(
   ],
 );
 
-export const tripPreferences = sqliteTable("trip_preferences", {
+export const tripPreferences = pgTable("trip_preferences", {
   memberId: text("member_id")
     .primaryKey()
     .references(() => tripMembers.id, { onDelete: "cascade" }),
-  interests: json<string[]>("interests").notNull().default(sql`'[]'`),
-  preferredDestinations: json<string[]>("preferred_destinations").notNull().default(sql`'[]'`),
+  interests: json<string[]>("interests").notNull().default(sql`'[]'::jsonb`),
+  preferredDestinations: json<string[]>("preferred_destinations").notNull().default(sql`'[]'::jsonb`),
   adventureTolerance: integer("adventure_tolerance").notNull().default(3),
   fitness: integer("fitness").notNull().default(3),
-  foodPreferences: json<string[]>("food_preferences").notNull().default(sql`'[]'`),
+  foodPreferences: json<string[]>("food_preferences").notNull().default(sql`'[]'::jsonb`),
   accommodation: text("accommodation").notNull().default("shared_property"),
   nightlife: integer("nightlife").notNull().default(3),
   budgetInr: integer("budget_inr"),
@@ -529,7 +539,7 @@ export const tripPreferences = sqliteTable("trip_preferences", {
   updatedAt: updatedAt(),
 });
 
-export const tripCandidates = sqliteTable(
+export const tripCandidates = pgTable(
   "trip_candidates",
   {
     id: id(),
@@ -547,8 +557,8 @@ export const tripCandidates = sqliteTable(
     /** Member ids taking part; null means "everyone". Drives per-person cost maths. */
     participants: json<string[] | null>("participants"),
     /** Agreed per-person price override in VND (e.g. an actual quotation). */
-    agreedPriceVnd: integer("agreed_price_vnd"),
-    priceIsQuote: integer("price_is_quote", { mode: "boolean" }).notNull().default(false),
+    agreedPriceVnd: vnd("agreed_price_vnd"),
+    priceIsQuote: boolean("price_is_quote").notNull().default(false),
     note: text("note"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -558,7 +568,7 @@ export const tripCandidates = sqliteTable(
 
 export const voteValues = ["must_do", "interested", "neutral", "not_interested", "cannot"] as const;
 
-export const groupVotes = sqliteTable(
+export const groupVotes = pgTable(
   "group_votes",
   {
     id: id(),
@@ -574,7 +584,7 @@ export const groupVotes = sqliteTable(
   (t) => [uniqueIndex("votes_uq").on(t.candidateId, t.memberId), index("votes_member_idx").on(t.memberId)],
 );
 
-export const comments = sqliteTable(
+export const comments = pgTable(
   "comments",
   {
     id: id(),
@@ -591,7 +601,7 @@ export const comments = sqliteTable(
   (t) => [index("comments_candidate_idx").on(t.candidateId)],
 );
 
-export const itineraryDays = sqliteTable(
+export const itineraryDays = pgTable(
   "itinerary_days",
   {
     id: id(),
@@ -618,7 +628,7 @@ export const transportModes = [
   "ferry",
 ] as const;
 
-export const transportLegs = sqliteTable(
+export const transportLegs = pgTable(
   "transport_legs",
   {
     id: id(),
@@ -634,15 +644,15 @@ export const transportLegs = sqliteTable(
     departAt: text("depart_at"),
     arriveAt: text("arrive_at"),
     durationMin: integer("duration_min"),
-    costVnd: integer("cost_vnd").notNull().default(0),
+    costVnd: vnd("cost_vnd").notNull().default(0),
     costMode: text("cost_mode", { enum: ["per_person", "total"] }).notNull().default("per_person"),
     participants: json<string[] | null>("participants"),
-    overnight: integer("overnight", { mode: "boolean" }).notNull().default(false),
+    overnight: boolean("overnight").notNull().default(false),
     luggageNote: text("luggage_note"),
     bookingRef: text("booking_ref"),
     /** Fixed legs (pre-booked international flights) are protected from casual edits. */
-    isFixed: integer("is_fixed", { mode: "boolean" }).notNull().default(false),
-    isInternational: integer("is_international", { mode: "boolean" }).notNull().default(false),
+    isFixed: boolean("is_fixed").notNull().default(false),
+    isInternational: boolean("is_international").notNull().default(false),
     status: text("status", { enum: ["idea", "quoted", "booked"] }).notNull().default("idea"),
     notes: text("notes"),
     createdAt: createdAt(),
@@ -655,7 +665,7 @@ export const transportLegs = sqliteTable(
   ],
 );
 
-export const accommodations = sqliteTable(
+export const accommodations = pgTable(
   "accommodations",
   {
     id: id(),
@@ -667,7 +677,7 @@ export const accommodations = sqliteTable(
     type: text("type").notNull().default("airbnb"),
     checkIn: text("check_in").notNull(),
     checkOut: text("check_out").notNull(),
-    costVnd: integer("cost_vnd").notNull().default(0),
+    costVnd: vnd("cost_vnd").notNull().default(0),
     costMode: text("cost_mode", { enum: ["per_person", "total"] }).notNull().default("total"),
     participants: json<string[] | null>("participants"),
     status: text("status", { enum: ["idea", "quoted", "booked"] }).notNull().default("idea"),
@@ -679,7 +689,7 @@ export const accommodations = sqliteTable(
   (t) => [index("acc_trip_idx").on(t.tripId), check("acc_dates_ck", sql`check_out > check_in`), check("acc_cost_ck", sql`cost_vnd >= 0`)],
 );
 
-export const itineraryItems = sqliteTable(
+export const itineraryItems = pgTable(
   "itinerary_items",
   {
     id: id(),
@@ -697,7 +707,7 @@ export const itineraryItems = sqliteTable(
     title: text("title").notNull(),
     startTime: text("start_time"),
     durationMin: integer("duration_min"),
-    costVnd: integer("cost_vnd").notNull().default(0),
+    costVnd: vnd("cost_vnd").notNull().default(0),
     costMode: text("cost_mode", { enum: ["per_person", "total"] }).notNull().default("per_person"),
     participants: json<string[] | null>("participants"),
     notes: text("notes"),
@@ -707,7 +717,7 @@ export const itineraryItems = sqliteTable(
   (t) => [index("items_day_idx").on(t.dayId), index("items_trip_idx").on(t.tripId)],
 );
 
-export const budgetCategories = sqliteTable("budget_categories", {
+export const budgetCategories = pgTable("budget_categories", {
   slug: text("slug").primaryKey(),
   name: text("name").notNull(),
   description: text("description").notNull(),
@@ -718,7 +728,7 @@ export const budgetCategories = sqliteTable("budget_categories", {
   sort: integer("sort").notNull().default(0),
 });
 
-export const expenses = sqliteTable(
+export const expenses = pgTable(
   "expenses",
   {
     id: id(),
@@ -729,12 +739,12 @@ export const expenses = sqliteTable(
       .notNull()
       .references(() => budgetCategories.slug),
     label: text("label").notNull(),
-    amountVnd: integer("amount_vnd").notNull(),
+    amountVnd: vnd("amount_vnd").notNull(),
     costMode: text("cost_mode", { enum: ["per_person", "total"] }).notNull().default("total"),
     participants: json<string[] | null>("participants"),
     destinationId: text("destination_id").references(() => destinations.id, { onDelete: "set null" }),
     date: text("date"),
-    isQuote: integer("is_quote", { mode: "boolean" }).notNull().default(false),
+    isQuote: boolean("is_quote").notNull().default(false),
     notes: text("notes"),
     createdBy: text("created_by"),
     createdAt: createdAt(),
@@ -745,7 +755,7 @@ export const expenses = sqliteTable(
 
 /* ──────────────────────── Guide & checklists ──────────────────────── */
 
-export const guideSections = sqliteTable("guide_sections", {
+export const guideSections = pgTable("guide_sections", {
   id: id(),
   slug: text("slug").notNull().unique(),
   letter: text("letter").notNull(),
@@ -755,7 +765,7 @@ export const guideSections = sqliteTable("guide_sections", {
   sort: integer("sort").notNull().default(0),
 });
 
-export const travelGuides = sqliteTable(
+export const travelGuides = pgTable(
   "travel_guides",
   {
     id: id(),
@@ -777,7 +787,7 @@ export const travelGuides = sqliteTable(
   (t) => [uniqueIndex("guides_slug_uq").on(t.slug), index("guides_section_idx").on(t.sectionId)],
 );
 
-export const preparationChecklists = sqliteTable("preparation_checklists", {
+export const preparationChecklists = pgTable("preparation_checklists", {
   id: id(),
   list: text("list", { enum: ["preparation", "packing"] }).notNull(),
   group: text("group_slug").notNull(),
@@ -787,7 +797,7 @@ export const preparationChecklists = sqliteTable("preparation_checklists", {
   sort: integer("sort").notNull().default(0),
 });
 
-export const checklistProgress = sqliteTable(
+export const checklistProgress = pgTable(
   "checklist_progress",
   {
     userId: text("user_id")
@@ -803,7 +813,7 @@ export const checklistProgress = sqliteTable(
 
 /* ───────────────────────── Work & Connect ───────────────────────── */
 
-export const eventOrganisers = sqliteTable("event_organisers", {
+export const eventOrganisers = pgTable("event_organisers", {
   id: id(),
   slug: text("slug").notNull().unique(),
   name: text("name").notNull(),
@@ -820,7 +830,7 @@ export const eventOrganisers = sqliteTable("event_organisers", {
   updatedAt: updatedAt(),
 });
 
-export const professionalEvents = sqliteTable("professional_events", {
+export const professionalEvents = pgTable("professional_events", {
   id: id(),
   slug: text("slug").notNull().unique(),
   organiserId: text("organiser_id").references(() => eventOrganisers.id, { onDelete: "set null" }),
@@ -840,7 +850,7 @@ export const professionalEvents = sqliteTable("professional_events", {
   updatedAt: updatedAt(),
 });
 
-export const networkingContacts = sqliteTable(
+export const networkingContacts = pgTable(
   "networking_contacts",
   {
     id: id(),
@@ -853,7 +863,7 @@ export const networkingContacts = sqliteTable(
     metAt: text("met_at"),
     notes: text("notes"),
     followUpDate: text("follow_up_date"),
-    followedUp: integer("followed_up", { mode: "boolean" }).notNull().default(false),
+    followedUp: boolean("followed_up").notNull().default(false),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -863,7 +873,7 @@ export const networkingContacts = sqliteTable(
 /* ───────────────────────── Platform ───────────────────────── */
 
 /** Community reviews. Never seeded with fabricated content. */
-export const reviews = sqliteTable(
+export const reviews = pgTable(
   "reviews",
   {
     id: id(),
@@ -886,7 +896,7 @@ export const reviews = sqliteTable(
   ],
 );
 
-export const feedback = sqliteTable("feedback", {
+export const feedback = pgTable("feedback", {
   id: id(),
   userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
   type: text("type", { enum: ["feedback", "correction", "group_report"] }).notNull(),
@@ -896,7 +906,7 @@ export const feedback = sqliteTable("feedback", {
   createdAt: createdAt(),
 });
 
-export const adminAuditLogs = sqliteTable(
+export const adminAuditLogs = pgTable(
   "admin_audit_logs",
   {
     id: id(),
@@ -912,9 +922,26 @@ export const adminAuditLogs = sqliteTable(
   (t) => [index("audit_entity_idx").on(t.entityType, t.entityId)],
 );
 
-export const settings = sqliteTable("settings", {
+export const settings = pgTable("settings", {
   key: text("key").primaryKey(),
   value: json<unknown>("value").notNull(),
   updatedAt: updatedAt(),
   updatedBy: text("updated_by"),
+});
+
+/* ───────────────────────────── Platform ───────────────────────────── */
+
+/** Fixed-window counters shared by every server instance (login throttling, joins, comments, guests). */
+export const rateLimits = pgTable("rate_limits", {
+  key: text("key").primaryKey(),
+  count: integer("count").notNull(),
+  resetAt: bigint("reset_at", { mode: "number" }).notNull(),
+});
+
+/** Admin-uploaded images (re-encoded WebP), served by /media/uploads/[file] and cached by the CDN. */
+export const mediaBlobs = pgTable("media_blobs", {
+  name: text("name").primaryKey(),
+  contentType: text("content_type").notNull(),
+  data: bytea("data").notNull(),
+  createdAt: createdAt(),
 });
