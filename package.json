@@ -18,7 +18,9 @@
     "content:check": "tsx scripts/check-content.ts",
     "e2e:reset": "tsx scripts/e2e-reset.ts",
     "media": "tsx scripts/media.ts",
-    "db:local": "docker run -d --name atlas-pg -e POSTGRES_PASSWORD=atlas-local -e POSTGRES_DB=atlas -p 54329:5432 postgres:17-alpine"
+    "db:local": "docker run -d --name atlas-pg -e POSTGRES_PASSWORD=atlas-local -e POSTGRES_DB=atlas -p 54329:5432 postgres:17-alpine",
+    "db:setup": "tsx --env-file-if-exists=.env.local scripts/db-setup.ts",
+    "vercel-build": "tsx scripts/db-setup.ts && next build"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

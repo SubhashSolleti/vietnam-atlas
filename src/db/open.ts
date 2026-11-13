@@ -14,7 +14,9 @@ import * as schema from "./schema";
 export function databaseUrl(kind: "app" | "migrations" = "app") {
   const env = process.env;
   const app = env.DATABASE_URL || env.POSTGRES_URL;
-  const url = (kind === "migrations" && (env.MIGRATION_DATABASE_URL || env.POSTGRES_URL_NON_POOLING)) || app;
+  // Supabase's direct connection is IPv6-only, which Vercel's builders can't reach: there, migrate through the pooler.
+  const direct = env.MIGRATION_DATABASE_URL || (env.VERCEL ? undefined : env.POSTGRES_URL_NON_POOLING);
+  const url = (kind === "migrations" && direct) || app;
   if (!url) throw new Error("DATABASE_URL is not set. Copy .env.example to .env.local and add your Supabase connection string.");
   return url;
 }
@@ -29,8 +31,19 @@ export function describeDatabase(url: string) {
   }
 }
 
+/** Drop connection-string options meant for other drivers (Prisma's pgbouncer=, the integration's supa=, sslmode=). */
+function forPostgresJs(url: string) {
+  try {
+    const u = new URL(url);
+    for (const k of ["supa", "pgbouncer", "sslmode", "connection_limit"]) u.searchParams.delete(k);
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
 export function openDatabase(kind: "app" | "migrations" = "app") {
-  const url = databaseUrl(kind);
+  const url = forPostgresJs(databaseUrl(kind));
   const local = /@(localhost|127\.0\.0\.1)[:/]/.test(url);
   const client = postgres(url, {
     prepare: false,
