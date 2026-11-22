@@ -125,7 +125,11 @@ export function PicksPanel({
     const next: Pick | null = vote ? { vote, dayId: dayId === undefined ? (current?.dayId ?? null) : dayId } : null;
     setLocal((s) => ({ ...s, [activityId]: { ...s[activityId], [who]: next } }));
     start(async () => {
-      const r = await pickActivity(tripId, activityId, { vote, dayId, onBehalfOf: who === myMemberId ? undefined : who });
+      // A tab opened before the site was updated can't reach the server any more: say so, rather than losing the pick.
+      const r = await pickActivity(tripId, activityId, { vote, dayId, onBehalfOf: who === myMemberId ? undefined : who }).catch(() => ({
+        ok: false as const,
+        error: navigator.onLine ? "That pick wasn't saved. The site may have just been updated: reload the page and try again." : "You're offline, so that pick wasn't saved. Try again when you're back online.",
+      }));
       if (!r.ok) {
         toast({ tone: "error", title: r.error });
         setLocal((s) => ({ ...s, [activityId]: { ...s[activityId], [who]: current ?? null } }));

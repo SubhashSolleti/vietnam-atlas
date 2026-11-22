@@ -458,11 +458,18 @@ function Card({
   children?: React.ReactNode;
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: `${data.kind}:${data.activityId}`, data, disabled: !editable });
+  // With a mouse the whole card drags (people grab the card, not the grip); fields and menus inside it don't start one.
+  // Touch and keyboard drags start from the grip, so the page still scrolls when you swipe across a card.
+  const { onMouseDown, ...gripListeners } = (listeners ?? {}) as Record<string, (e: React.SyntheticEvent) => void>;
   return (
-    <article ref={setNodeRef} className={cn("rounded-md border bg-surface p-2.5 text-sm shadow-xs", accent ? "border-accent/50" : "border-line", muted && "border-dashed bg-surface/70", isDragging && "opacity-40")}>
+    <article
+      ref={setNodeRef}
+      onMouseDown={editable && onMouseDown ? (e) => !(e.target as Element).closest("select, input, textarea") && onMouseDown(e) : undefined}
+      className={cn("rounded-md border bg-surface p-2.5 text-sm shadow-xs", editable && "md:cursor-grab md:active:cursor-grabbing", accent ? "border-accent/50" : "border-line", muted && "border-dashed bg-surface/70", isDragging && "opacity-40")}
+    >
       <div className="flex items-start gap-1.5">
         {editable && (
-          <button type="button" {...listeners} {...attributes} aria-label={`Move ${title}`} className="-my-1 -ml-2 shrink-0 cursor-grab touch-none rounded-sm p-1.5 text-muted hover:text-ink active:cursor-grabbing">
+          <button type="button" {...gripListeners} {...attributes} aria-label={`Move ${title}`} className="-my-1 -ml-2 shrink-0 cursor-grab touch-none rounded-sm p-1.5 text-muted hover:text-ink active:cursor-grabbing">
             <GripVertical className="size-4" aria-hidden />
           </button>
         )}
@@ -476,7 +483,7 @@ function Card({
           )}
           <p className="mt-0.5 font-medium leading-snug">
             {star && <Star className="mr-1 inline size-3.5 -translate-y-px fill-current text-accent" aria-label="Must do" />}
-            {slug ? <Link href={`/experiences/${slug}`} className="hover:underline">{title}</Link> : title}
+            {slug ? <Link href={`/experiences/${slug}`} draggable={false} className="hover:underline">{title}</Link> : title}
           </p>
           {meta && <p className="mt-0.5 text-xs text-muted">{meta}</p>}
           {people && (people.length > 0 || !!count) && (
