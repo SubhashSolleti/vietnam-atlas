@@ -64,6 +64,14 @@ describe("computePlanAlerts", () => {
     expect(computePlanAlerts({ days, legs: [] }).some((a) => a.kind === "detour")).toBe(false);
   });
 
+  it("ends a transfer given only a duration when the duration says, not at midnight", () => {
+    const alerts = computePlanAlerts({
+      days: [{ date: "2026-12-18", destination: hanoi, items: [{ id: "later", title: "Basket boats", type: "activity", startTime: "14:30", durationMin: 90, activity: act() }] }],
+      legs: [{ id: "van", label: "Da Nang → Hoi An", departAt: "2026-12-18T10:00", arriveAt: null, durationMin: 45, overnight: false, isFixed: false }],
+    });
+    expect(alerts.filter((x) => x.kind === "fixed_transport_conflict")).toEqual([]);
+  });
+
   it("returns nothing for a sensible day", () => {
     const alerts = computePlanAlerts({ days: [{ date: "2026-12-20", destination: hanoi, items: [{ id: "1", title: "Museum", type: "activity", startTime: "10:00", durationMin: 120, activity: act() }] }], legs: [] });
     expect(alerts).toEqual([]);

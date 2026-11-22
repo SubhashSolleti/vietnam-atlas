@@ -1,9 +1,9 @@
 "use client";
 
-import { Crown, Pencil, RefreshCw, Trash2, UserPlus } from "lucide-react";
+import { Crown, Pencil, RefreshCw, Trash2, Unlink, UserPlus } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
-import { addSeat, deleteTrip, leaveTrip, regenerateInvite, removeMember, updateMember, updateTrip } from "@/app/actions/trips";
+import { addSeat, deleteTrip, leaveTrip, regenerateInvite, releaseSeat, removeMember, updateMember, updateTrip } from "@/app/actions/trips";
 import { CopyButton } from "@/components/catalog/actions";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -72,6 +72,12 @@ export function MembersPanel({
               {(m.isMe || canManage) && (
                 <Button size="sm" variant="ghost" onClick={() => setEditing(m)} aria-label={`Edit ${m.displayName}`}>
                   <Pencil className="size-4" />
+                </Button>
+              )}
+              {myRole === "owner" && m.role !== "owner" && m.joined && !m.isMe && (
+                <Button size="sm" variant="ghost" aria-label={`Free ${m.displayName}'s seat`} title="Free the seat (keeps their picks) so they can rejoin from another phone" disabled={pending}
+                  onClick={async () => (await confirm({ title: `Free ${m.displayName}'s seat?`, description: "Their picks stay. They can claim the seat again from the invite link, for example on a new phone.", confirmLabel: "Free seat" })) && run(() => releaseSeat(m.id), `${m.displayName}'s seat is free to claim again`)}>
+                  <Unlink className="size-4" />
                 </Button>
               )}
               {myRole === "owner" && m.role !== "owner" && (

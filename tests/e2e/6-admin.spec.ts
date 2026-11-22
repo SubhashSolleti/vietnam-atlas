@@ -5,7 +5,7 @@ import { watchErrors, E2E_ADMIN_PASSWORD } from "./helpers";
 test("Scenario 6: admin creates, sources, illustrates, prices and publishes an activity", async ({ page }) => {
   const w = watchErrors(page);
   await page.goto("/login?next=/admin");
-  await page.getByLabel("Email").fill("admin@atlas.local");
+  await page.getByLabel("Email").fill("subhash@atlas.local");
   await page.getByLabel("Password").fill(E2E_ADMIN_PASSWORD);
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page).toHaveURL(/\/admin$/);

@@ -72,7 +72,7 @@ export async function addItineraryItem(dayId: string, input: z.input<typeof item
   return run(async () => {
     const v = itemSchema.parse(input);
     const user = await requireUser();
-    const { day } = await dayAccess(dayId, user.id);
+    const { day, member } = await dayAccess(dayId, user.id);
     let { costVnd, costMode, durationMin, title } = v;
     if (v.activityId) {
       const act = await db.select().from(t.activities).where(eq(t.activities.id, v.activityId)).get();
@@ -89,6 +89,9 @@ export async function addItineraryItem(dayId: string, input: z.input<typeof item
       // Scheduling moves an open or approved shortlist item along; a rejected or completed one keeps its status.
       if (cand && (cand.status === "discussion" || cand.status === "approved"))
         await db.update(t.tripCandidates).set({ status: "scheduled" }).where(eq(t.tripCandidates.id, cand.id)).run();
+      // Everything planned can be picked: travellers mark it "I'm in", "Skip" or "Already done" on the day-by-day page.
+      if (!cand)
+        await db.insert(t.tripCandidates).values({ tripId: day.tripId, activityId: act.id, addedBy: member.id, status: "scheduled", participation: "everyone" }).onConflictDoNothing().run();
     }
     const last = (await db.select({ sort: t.itineraryItems.sort }).from(t.itineraryItems).where(eq(t.itineraryItems.dayId, dayId)).orderBy(asc(t.itineraryItems.sort)).all()).at(-1);
     const row = (await db

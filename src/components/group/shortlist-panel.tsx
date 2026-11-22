@@ -35,8 +35,8 @@ type Candidate = {
   analysis: CandidateAnalysis;
 };
 
-const VOTE_ORDER: Vote[] = ["must_do", "interested", "neutral", "not_interested", "cannot"];
-const VOTE_COLOR: Record<Vote, string> = { must_do: "bg-brand", interested: "bg-brand-2/70", neutral: "bg-line-strong", not_interested: "bg-highlight", cannot: "bg-bad/70" };
+const VOTE_ORDER: Vote[] = ["must_do", "interested", "neutral", "not_interested", "cannot", "done_before"];
+const VOTE_COLOR: Record<Vote, string> = { must_do: "bg-brand", interested: "bg-brand-2/70", neutral: "bg-line-strong", not_interested: "bg-highlight", cannot: "bg-bad/70", done_before: "bg-accent/60" };
 const STATUS: Record<string, { label: string; tone: Tone }> = {
   discussion: { label: "In discussion", tone: "neutral" },
   approved: { label: "Group approved", tone: "good" },

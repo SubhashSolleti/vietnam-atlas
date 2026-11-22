@@ -46,20 +46,24 @@ export function JoinForm({
       onSubmit={(e) => {
         e.preventDefault();
         setError(undefined);
+        if (!name.trim()) return setError("Enter your name so the group knows who you are.");
         start(async () => {
-          const r = await joinTrip({ code, seatId: seat === "new" ? undefined : seat, displayName: name.trim() || undefined });
+          const r = await joinTrip({ code, seatId: seat === "new" ? undefined : seat, displayName: name.trim() });
           if (!r.ok) {
             setError(r.error);
             return;
           }
           if (addActivityId) await addCandidate(r.tripId, addActivityId);
           toast({ tone: "success", title: "You've joined the trip" });
-          router.push(`/group/${r.tripId}?tab=preferences`);
+          router.push(`/group/${r.tripId}?tab=plan`);
         });
       }}
     >
+      <Field label="Your name" name="displayName" error={error} hint="No account or password needed: your name is how the group sees your picks.">
+        {(p) => <Input {...p} value={name} onChange={(e) => setName(e.target.value)} maxLength={40} required autoComplete="given-name" placeholder="e.g. Priya" />}
+      </Field>
       <fieldset>
-        <legend className="mb-3 font-semibold">Which traveller are you?</legend>
+        <legend className="mb-3 font-semibold">Pick your seat</legend>
         <ul className="grid gap-2 sm:grid-cols-2">
           {seats.map((s) => (
             <li key={s.id}>
@@ -81,9 +85,6 @@ export function JoinForm({
           </li>
         </ul>
       </fieldset>
-      <Field label={seat === "new" ? "Your name" : "Your name (optional: replaces the seat name)"} name="displayName" error={error}>
-        {(p) => <Input {...p} value={name} onChange={(e) => setName(e.target.value)} maxLength={40} required={seat === "new"} placeholder="e.g. Priya" />}
-      </Field>
       <Button type="submit" size="lg" disabled={pending}>{pending ? "Joining…" : "Join trip"}</Button>
     </form>
   );

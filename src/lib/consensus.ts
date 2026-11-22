@@ -2,7 +2,10 @@
  * Group consensus engine: pure functions. Produces *suggestions*; it never changes data.
  */
 
-export type Vote = "must_do" | "interested" | "neutral" | "not_interested" | "cannot";
+export type Vote = "must_do" | "interested" | "neutral" | "not_interested" | "cannot" | "done_before";
+
+/** Votes that take a traveller out of an activity. "Already done" is not a judgement on it, so it never lowers the score. */
+export const SITTING_OUT: readonly Vote[] = ["not_interested", "cannot", "done_before"];
 
 export const VOTE_SCORE: Record<Vote, number> = {
   must_do: 2,
@@ -10,6 +13,7 @@ export const VOTE_SCORE: Record<Vote, number> = {
   neutral: 0,
   not_interested: -1,
   cannot: -2,
+  done_before: 0,
 };
 
 export interface ConsensusMember {
@@ -60,10 +64,13 @@ export function analyseCandidate(
   members: ConsensusMember[],
   opts: { remainingPerPersonVnd?: number | null } = {},
 ): CandidateAnalysis {
-  const counts: Record<Vote, number> = { must_do: 0, interested: 0, neutral: 0, not_interested: 0, cannot: 0 };
-  const byMember = new Map(c.votes.map((v) => [v.memberId, v.vote]));
+  const counts: Record<Vote, number> = { must_do: 0, interested: 0, neutral: 0, not_interested: 0, cannot: 0, done_before: 0 };
   for (const v of c.votes) counts[v.vote]++;
-  const scores = c.votes.map((v) => VOTE_SCORE[v.vote]);
+  // "Already done" votes are abstentions for scoring: they say nothing about whether the activity is good.
+  const opinions = c.votes.filter((v) => v.vote !== "done_before");
+  const byMember = new Map(opinions.map((v) => [v.memberId, v.vote]));
+  const allVotes = new Map(c.votes.map((v) => [v.memberId, v.vote]));
+  const scores = opinions.map((v) => VOTE_SCORE[v.vote]);
   const score = scores.reduce((a, b) => a + b, 0);
   const typeAvg = (type: "couple" | "solo") =>
     avg(
@@ -81,17 +88,17 @@ export function analyseCandidate(
   };
   const likelyParticipants = members
     .filter((m) => {
-      const v = byMember.get(m.id);
-      return v !== "not_interested" && v !== "cannot";
+      const v = allVotes.get(m.id);
+      return !v || !SITTING_OUT.includes(v);
     })
     .map((m) => m.id);
   const positive = counts.must_do + counts.interested;
   const negative = counts.not_interested + counts.cannot;
-  const quorum = c.votes.length >= Math.ceil(members.length * 0.6);
+  const quorum = opinions.length >= Math.ceil(members.length * 0.6);
   const avgScore = avg(scores) ?? 0;
   const remaining = opts.remainingPerPersonVnd;
   // "Only one fan" is low interest in a real group, but not on a solo or two-person trip.
-  const lowInterest = c.votes.length > 0 && (avgScore <= 0 || positive <= (members.length >= 4 ? 1 : 0));
+  const lowInterest = opinions.length > 0 && (avgScore <= 0 || positive <= (members.length >= 4 ? 1 : 0));
 
   return {
     id: c.id,

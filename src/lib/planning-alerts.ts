@@ -89,6 +89,8 @@ function legWindowOnDate(leg: PlanLeg, date: string) {
   const dep = leg.departAt ? toMinutes(leg.departAt.slice(11, 16)) : null;
   let arr = leg.arriveAt ? toMinutes(leg.arriveAt.slice(11, 16)) : null;
   if (arr == null && dep != null && leg.durationMin) arr = dep + leg.durationMin;
+  // No arrival given: the duration says when it ends (same day unless it runs past midnight).
+  if (!arrDate && depDate === date && dep != null && arr != null) return { start: dep, end: Math.min(arr, 24 * 60) };
   if (depDate === date && arrDate === date && dep != null && arr != null) return { start: dep, end: arr };
   if (depDate === date && dep != null && arrDate !== date) return { start: dep, end: 24 * 60 };
   if (arrDate === date && arr != null && depDate !== date) return { start: 0, end: arr };

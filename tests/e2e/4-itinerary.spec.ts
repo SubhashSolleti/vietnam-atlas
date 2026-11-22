@@ -3,11 +3,12 @@ import { watchErrors } from "./helpers";
 
 test("Scenario 4: itinerary: route, activities, overnight transport, reorder, budget, conflicts", async ({ page }) => {
   const w = watchErrors(page);
-  // Join the seeded demo trip on the editor seat (the owner seat belongs to the site admin)
+  // Join the seeded demo trip on the editor seat (the owner seat is Subhash's)
   await page.goto("/join/COUSINS26");
+  await page.getByLabel(/Your name/).fill("Asha");
   await page.getByRole("radio", { name: /Traveller 2/ }).check();
   await page.getByRole("button", { name: "Join trip" }).click();
-  await expect(page).toHaveURL(/tab=preferences/);
+  await expect(page).toHaveURL(/tab=plan/);
 
   await page.goto("/trip");
   await expect(page.getByRole("heading", { level: 1, name: "Vietnam Cousins Trip 2026" })).toBeVisible();
@@ -15,11 +16,9 @@ test("Scenario 4: itinerary: route, activities, overnight transport, reorder, bu
   await expect(page.getByText(/Land at Phu Quoc \(PQC\)/)).toBeVisible();
   const budgetBefore = await page.getByText(/^Est\./).textContent();
 
-  // Select destinations via suggested route
-  await page.getByRole("button", { name: "Suggest a route" }).click();
-  await page.getByRole("dialog").getByRole("button", { name: "Apply suggestion" }).click();
-  await expect(page.getByRole("status").filter({ hasText: /Filled \d+ days/ })).toBeVisible();
-  await expect(page.locator("#day-2026-12-13").getByText("Phu Quoc")).toBeVisible();
+  // The base plan fills every day, so there's no route to suggest
+  await expect(page.locator("#day-2026-12-13").getByText("Phu Quoc").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Suggest a route" })).toHaveCount(0);
 
   // Add an activity to 13 Dec with a time
   const d13 = page.locator("#day-2026-12-13");
@@ -59,7 +58,7 @@ test("Scenario 4: itinerary: route, activities, overnight transport, reorder, bu
   await page.keyboard.press("Space");
   await expect(d13.getByRole("button", { name: /^Drag to reorder/ }).first()).not.toHaveAttribute("aria-label", firstBefore!);
 
-  // Overnight transport Hanoi → Sa Pa already added by the route; add another overnight leg manually
+  // Overnight transport Hanoi → Sa Pa comes with the base plan; add another overnight leg manually
   await page.getByRole("radio", { name: "Route" }).click();
   await expect(page.getByRole("listitem").filter({ hasText: /Hanoi → Sa Pa/ }).first()).toBeVisible();
   await expect(page.getByText("Overnight").first()).toBeVisible();
@@ -73,7 +72,7 @@ test("Scenario 4: itinerary: route, activities, overnight transport, reorder, bu
   await leg.getByLabel("Cost (₹)").fill("1300");
   await leg.getByLabel(/Overnight journey/).check();
   await leg.getByRole("button", { name: "Save" }).click();
-  await expect(page.getByText(/Ho Chi Minh City → Da Lat/)).toBeVisible();
+  await expect(page.getByText(/Ho Chi Minh City → Da Lat/).first()).toBeVisible();
 
   // Budget has updated
   await page.reload();

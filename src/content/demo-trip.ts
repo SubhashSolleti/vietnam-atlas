@@ -4,46 +4,31 @@
  */
 import type { TripSettings } from "@/db/schema";
 
+/** Subhash: site operator (super admin) and owner of the group trip. Sign-in email, not a real mailbox. */
+export const tripOwner = { email: "subhash@atlas.local", displayName: "Subhash" };
+
 export const demoTrip = {
   name: "Vietnam Cousins Trip 2026",
   description:
-    "Seven cousins, two weeks, south to north. Balanced pace, best-value stays, safety first, beaches, adventure, food and a few late nights.",
+    "Seven of us, 14 days, Phu Quoc to Hanoi. Subhash's plan is the base: mark what you're in for, what you'd skip and what you've already done, and add anything else you want.",
   startDate: "2026-12-12",
   endDate: "2026-12-25",
   travellersCount: 7,
-  budgetMinInr: 55000,
-  budgetMaxInr: 70000,
-  budgetTargetInr: 65000,
+  // From the base plan's budget page: ₹1.21 to 2.17 lakh per person (mid-range, international flights excluded).
+  budgetMinInr: 121000,
+  budgetMaxInr: 217000,
+  budgetTargetInr: 169000,
   currency: "INR",
   scenario: "balanced" as const,
   inviteCode: "COUSINS26",
   members: [
-    { displayName: "Traveller 1", role: "owner" as const, travellerType: "couple" as const, coupleGroup: "A", avatarColor: "#173F35" },
+    { displayName: "Subhash", role: "owner" as const, travellerType: "couple" as const, coupleGroup: "A", avatarColor: "#173F35" },
     { displayName: "Traveller 2", role: "editor" as const, travellerType: "couple" as const, coupleGroup: "A", avatarColor: "#377A61" },
     { displayName: "Traveller 3", role: "member" as const, travellerType: "couple" as const, coupleGroup: "B", avatarColor: "#C96F50" },
     { displayName: "Traveller 4", role: "member" as const, travellerType: "couple" as const, coupleGroup: "B", avatarColor: "#D6AB59" },
     { displayName: "Traveller 5", role: "member" as const, travellerType: "solo" as const, avatarColor: "#5B6F8F" },
     { displayName: "Traveller 6", role: "member" as const, travellerType: "solo" as const, avatarColor: "#8A5A83" },
     { displayName: "Traveller 7", role: "member" as const, travellerType: "solo" as const, avatarColor: "#6E7B3A" },
-  ],
-  /** Already-booked international flights. Excluded from the Vietnam budget by default. */
-  fixedFlights: [
-    {
-      fromLabel: "Hyderabad (HYD)",
-      toLabel: "Phu Quoc International Airport (PQC)",
-      toDestination: "phu-quoc",
-      departAt: "2026-12-11T22:20",
-      arriveAt: "2026-12-12T15:30",
-      notes: "Booked international flight. Departure in Hyderabad local time (IST), arrival in Vietnam local time (ICT, UTC+7).",
-    },
-    {
-      fromLabel: "Hanoi: Noi Bai International Airport (HAN)",
-      toLabel: "Hyderabad (HYD)",
-      fromDestination: "hanoi",
-      departAt: "2026-12-25T12:20",
-      arriveAt: "2026-12-25T22:55",
-      notes: "Booked international flight. Departure in Vietnam local time (ICT), arrival in Hyderabad local time (IST). Plan to leave central Hanoi ~3 hours before departure.",
-    },
   ],
   settings: {
     insurancePerPersonVnd: 650_000,

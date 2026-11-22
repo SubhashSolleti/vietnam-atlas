@@ -566,7 +566,7 @@ export const tripCandidates = pgTable(
   (t) => [uniqueIndex("candidates_trip_activity_uq").on(t.tripId, t.activityId)],
 );
 
-export const voteValues = ["must_do", "interested", "neutral", "not_interested", "cannot"] as const;
+export const voteValues = ["must_do", "interested", "neutral", "not_interested", "cannot", "done_before"] as const;
 
 export const groupVotes = pgTable(
   "group_votes",

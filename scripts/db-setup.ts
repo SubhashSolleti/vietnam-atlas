@@ -1,11 +1,12 @@
 /**
- * Release step (runs before `next build` on Vercel): apply migrations, then seed the content if — and only if — the
- * database is empty. Safe to run on every deploy. Skips cleanly when no database is configured (e.g. previews).
+ * Release step (runs before `next build` on Vercel): apply migrations, then seed the content if (and only if) the
+ * database is empty, or apply any pending one-time data upgrades if it isn't. Safe to run on every deploy. Skips cleanly when no database is configured (e.g. previews).
  */
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { resolve } from "node:path";
 import { sql } from "drizzle-orm";
 import { describeDatabase, databaseUrl, openDatabase } from "../src/db/open";
+import { runDataUpgrades } from "./data-upgrades";
 
 const env = process.env;
 if (!env.DATABASE_URL && !env.POSTGRES_URL) {
@@ -27,6 +28,8 @@ if (users === 0) {
     await db.execute(sql.raw(`truncate ${tables.map((t) => `public."${t.tablename}"`).join(", ")} restart identity cascade`));
     console.log("db:setup: cleared a partially seeded database.");
   }
+} else {
+  await runDataUpgrades(db);
 }
 await client.end();
 

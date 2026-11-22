@@ -150,6 +150,7 @@ export const VOTE_LABELS = {
   neutral: "Neutral",
   not_interested: "Not interested",
   cannot: "Can't participate",
+  done_before: "Already done",
 } as const;
 
 export const TRANSPORT_LABELS: Record<string, string> = {

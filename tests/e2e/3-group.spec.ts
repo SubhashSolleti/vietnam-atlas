@@ -32,7 +32,8 @@ test("Scenario 3: create a trip, invite, join from another browser, preferences,
   await p2.getByRole("radio", { name: /Traveller 2/ }).check();
   await p2.getByLabel(/Your name/).fill("Ravi");
   await p2.getByRole("button", { name: "Join trip" }).click();
-  await expect(p2).toHaveURL(/tab=preferences/);
+  await expect(p2).toHaveURL(/tab=plan/);
+  await p2.goto(`${tripUrl}?tab=preferences`);
 
   // Configure preferences
   await p2.getByRole("button", { name: "Beaches & islands" }).click();

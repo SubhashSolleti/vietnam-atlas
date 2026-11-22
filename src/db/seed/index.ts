@@ -8,17 +8,19 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { openDatabase } from "../open";
 import * as t from "../schema";
 import type { DestinationBundle, MediaManifestEntry, SourceRef } from "../../content/types";
 import { regions } from "../../content/regions";
 import { CATEGORY_LABELS, THEME_LABELS } from "../../content/taxonomy";
-import { budgetCategories, demoTrip } from "../../content/demo-trip";
+import { budgetCategories, demoTrip, tripOwner } from "../../content/demo-trip";
 import { UNIT_CAPACITY } from "../../content/unit-capacity";
 import { BUNDLE_OF } from "../../content/ticket-bundles";
 import { DEFAULT_FX } from "../../lib/money";
 import { hashPasswordSync } from "./password";
+import { applyBasePlan } from "./base-plan";
+import { BASE_PLAN_VERSION } from "../../content/base-plan";
 
 // Seeding runs on an empty database and is simply re-run on failure, so it uses plain statements (no transactions).
 const { db, client } = openDatabase("migrations");
@@ -377,6 +379,8 @@ async function main() {
 
     /* Settings */
     await db.insert(t.settings).values({ key: "fx", value: DEFAULT_FX, updatedBy: "seed" }).run();
+    // A fresh database already has the current base plan: mark its one-time upgrade as done.
+    await db.insert(t.settings).values({ key: "data_upgrades", value: [BASE_PLAN_VERSION], updatedBy: "seed" }).run();
     await db
       .insert(t.settings)
       .values({
@@ -535,7 +539,7 @@ async function main() {
     generated.push(`${label}: ${pw}`);
     return pw;
   };
-  const adminPassword = secret(process.env.SEED_ADMIN_PASSWORD, "admin@atlas.local");
+  const adminPassword = secret(process.env.SEED_ADMIN_PASSWORD, tripOwner.email);
   const editorPassword = secret(process.env.SEED_EDITOR_PASSWORD, "editor@atlas.local");
   // The demo trip is a real group's private workspace: its invite code must not be guessable.
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -544,9 +548,9 @@ async function main() {
     const admin = (await db
       .insert(t.users)
       .values({
-        email: "admin@atlas.local",
+        email: tripOwner.email,
         passwordHash: hashPasswordSync(adminPassword),
-        displayName: "Atlas Admin",
+        displayName: tripOwner.displayName,
         role: "super_admin",
         isGuest: false,
         avatarColor: "#173F35",
@@ -589,7 +593,7 @@ async function main() {
         .insert(t.tripMembers)
         .values({
           tripId: trip.id,
-          // The owner seat belongs to the site operator; the other seats are claimed with the invite code.
+          // The owner seat is Subhash (site operator and trip owner); the other seats are claimed with the invite link.
           userId: m.role === "owner" ? admin.id : null,
           joinedAt: m.role === "owner" ? new Date().toISOString() : null,
           displayName: m.displayName,
@@ -603,83 +607,14 @@ async function main() {
         .get())!;
       await db.insert(t.tripPreferences).values({ memberId: row.id }).run();
     }
-    // Itinerary days
-    const dates: string[] = [];
-    for (let d = new Date(`${trip.startDate}T00:00:00Z`); d <= new Date(`${trip.endDate}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + 1))
-      dates.push(d.toISOString().slice(0, 10));
-    const dest = async (slug: string) =>
-      (await db.select({ id: t.destinations.id }).from(t.destinations).where(eq(t.destinations.slug, slug)).get())?.id ?? null;
-    const dayIds = new Map<string, string>();
-    for (const date of dates) {
-      const destinationId = date === trip.startDate ? await dest("phu-quoc") : date === trip.endDate ? await dest("hanoi") : null;
-      const row = (await db.insert(t.itineraryDays).values({ tripId: trip.id, date, destinationId }).returning({ id: t.itineraryDays.id }).get())!;
-      dayIds.set(date, row.id);
-    }
-    // Fixed international flights
-    const [outbound, inbound] = demoTrip.fixedFlights;
-    const legOut = (await db
-      .insert(t.transportLegs)
-      .values({
-        tripId: trip.id,
-        toDestinationId: await dest(outbound.toDestination ?? ""),
-        fromLabel: outbound.fromLabel,
-        toLabel: outbound.toLabel,
-        mode: "flight",
-        departAt: outbound.departAt,
-        arriveAt: outbound.arriveAt,
-        costVnd: 0,
-        isFixed: true,
-        isInternational: true,
-        status: "booked",
-        notes: outbound.notes,
-      })
-      .returning({ id: t.transportLegs.id })
-      .get())!;
-    const legIn = (await db
-      .insert(t.transportLegs)
-      .values({
-        tripId: trip.id,
-        fromDestinationId: await dest(inbound.fromDestination ?? ""),
-        fromLabel: inbound.fromLabel,
-        toLabel: inbound.toLabel,
-        mode: "flight",
-        departAt: inbound.departAt,
-        arriveAt: inbound.arriveAt,
-        costVnd: 0,
-        isFixed: true,
-        isInternational: true,
-        status: "booked",
-        notes: inbound.notes,
-      })
-      .returning({ id: t.transportLegs.id })
-      .get())!;
-    await db
-      .insert(t.itineraryItems)
-      .values([
-        {
-          tripId: trip.id,
-          dayId: dayIds.get(trip.startDate)!,
-          sort: 0,
-          type: "transport",
-          transportLegId: legOut.id,
-          title: "Land at Phu Quoc (PQC): flight from Hyderabad",
-          startTime: "15:30",
-          durationMin: 75,
-          notes: "Booked. Allow time for immigration and the transfer to your stay.",
-        },
-        {
-          tripId: trip.id,
-          dayId: dayIds.get(trip.endDate)!,
-          sort: 0,
-          type: "transport",
-          transportLegId: legIn.id,
-          title: "Transfer to Noi Bai & fly Hanoi → Hyderabad (12:20)",
-          startTime: "09:15",
-          durationMin: 185,
-          notes: "Booked. Leave central Hanoi about 3 hours before departure.",
-        },
-      ])
-      .run();
+    // Base itinerary: Subhash's 14-day plan with the booked flights.
+    const ownerSeat = await db
+      .select({ id: t.tripMembers.id })
+      .from(t.tripMembers)
+      .where(and(eq(t.tripMembers.tripId, trip.id), eq(t.tripMembers.role, "owner")))
+      .get();
+    const plan = await applyBasePlan(db, trip, ownerSeat?.id ?? null, demoTrip.members.length);
+    console.log(`✓ Base plan: ${plan.days} days, ${plan.items} itinerary items, ${plan.legs} transport legs`);
     console.log(`✓ Demo trip "${trip.name}" with ${demoTrip.members.length} seats: invite code ${trip.inviteCode}`);
   })();
 

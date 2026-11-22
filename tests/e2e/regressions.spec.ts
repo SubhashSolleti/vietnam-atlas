@@ -48,12 +48,12 @@ test.describe("UI regressions", () => {
   test("register form keeps name and email after a server error", async ({ page }) => {
     await page.goto("/register");
     await page.getByLabel("Your name").fill("QA Person");
-    await page.getByLabel("Email").fill("admin@atlas.local");
+    await page.getByLabel("Email").fill("subhash@atlas.local");
     await page.getByLabel("Password").fill("longenoughpassword1");
     await page.getByRole("button", { name: "Create account" }).click();
     await expect(page.getByRole("alert").filter({ hasText: /already exists/ })).toBeVisible();
     await expect(page.getByLabel("Your name")).toHaveValue("QA Person");
-    await expect(page.getByLabel("Email")).toHaveValue("admin@atlas.local");
+    await expect(page.getByLabel("Email")).toHaveValue("subhash@atlas.local");
   });
 
   test("an out-of-range page number shows the last page, not an empty list", async ({ page }) => {

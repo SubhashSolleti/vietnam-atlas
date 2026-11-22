@@ -328,20 +328,39 @@ export async function removeMember(memberId: string) {
     if (target.role === "owner") throw new UserError("The owner can't be removed.");
     await db.transaction(async (tx) => {
       // Take the traveller out of every cost split first, so their share isn't silently re-billed to others.
-      const strip = <T extends { id: string; participants: string[] | null }>(rows: T[], update: (id: string, p: string[]) => void) => {
-        for (const r of rows) if (r.participants?.includes(memberId)) update(r.id, r.participants.filter((x) => x !== memberId));
+      const strip = async <T extends { id: string; participants: string[] | null }>(rows: T[], update: (id: string, p: string[]) => Promise<unknown>) => {
+        for (const r of rows) if (r.participants?.includes(memberId)) await update(r.id, r.participants.filter((x) => x !== memberId));
       };
       const byTrip = async (tbl: typeof t.expenses | typeof t.itineraryItems | typeof t.transportLegs | typeof t.accommodations | typeof t.tripCandidates) =>
         await tx.select({ id: tbl.id, participants: tbl.participants }).from(tbl).where(eq(tbl.tripId, target.tripId)).all();
-      strip(await byTrip(t.expenses), async (id, p) => await tx.update(t.expenses).set({ participants: p }).where(eq(t.expenses.id, id)).run());
-      strip(await byTrip(t.itineraryItems), async (id, p) => await tx.update(t.itineraryItems).set({ participants: p }).where(eq(t.itineraryItems.id, id)).run());
-      strip(await byTrip(t.transportLegs), async (id, p) => await tx.update(t.transportLegs).set({ participants: p }).where(eq(t.transportLegs.id, id)).run());
-      strip(await byTrip(t.accommodations), async (id, p) => await tx.update(t.accommodations).set({ participants: p }).where(eq(t.accommodations.id, id)).run());
-      strip(await byTrip(t.tripCandidates), async (id, p) => await tx.update(t.tripCandidates).set({ participants: p }).where(eq(t.tripCandidates.id, id)).run());
+      await strip(await byTrip(t.expenses), async (id, p) => await tx.update(t.expenses).set({ participants: p }).where(eq(t.expenses.id, id)).run());
+      await strip(await byTrip(t.itineraryItems), async (id, p) => await tx.update(t.itineraryItems).set({ participants: p }).where(eq(t.itineraryItems.id, id)).run());
+      await strip(await byTrip(t.transportLegs), async (id, p) => await tx.update(t.transportLegs).set({ participants: p }).where(eq(t.transportLegs.id, id)).run());
+      await strip(await byTrip(t.accommodations), async (id, p) => await tx.update(t.accommodations).set({ participants: p }).where(eq(t.accommodations.id, id)).run());
+      await strip(await byTrip(t.tripCandidates), async (id, p) => await tx.update(t.tripCandidates).set({ participants: p }).where(eq(t.tripCandidates.id, id)).run());
       await tx.delete(t.tripMembers).where(eq(t.tripMembers.id, memberId)).run();
       const remaining = (await tx.select({ id: t.tripMembers.id }).from(t.tripMembers).where(eq(t.tripMembers.tripId, target.tripId)).all()).length;
       await tx.update(t.trips).set({ travellersCount: remaining, updatedAt: new Date().toISOString() }).where(eq(t.trips.id, target.tripId)).run();
     });
+    revalidatePath("/", "layout");
+    return {};
+  });
+}
+
+/**
+ * Frees a claimed seat (owner only) without deleting anything: the traveller's picks stay, and they can claim the
+ * seat again from the invite link on a new phone or browser.
+ */
+export async function releaseSeat(memberId: string) {
+  return run(async () => {
+    const user = await requireUser();
+    const target = await db.select().from(t.tripMembers).where(eq(t.tripMembers.id, memberId)).get();
+    if (!target) throw new UserError("Member not found.");
+    await assertMember(target.tripId, user.id, ["owner"]);
+    if (target.role === "owner") throw new UserError("The owner's seat can't be freed.");
+    if (!target.userId) throw new UserError(`${target.displayName}'s seat is already free.`);
+    await db.update(t.tripMembers).set({ userId: null, joinedAt: null }).where(eq(t.tripMembers.id, memberId)).run();
+    await touchTrip(target.tripId);
     revalidatePath("/", "layout");
     return {};
   });
@@ -475,9 +494,9 @@ export async function removeCandidate(candidateId: string) {
   });
 }
 
-export async function castVote(candidateId: string, vote: "must_do" | "interested" | "neutral" | "not_interested" | "cannot" | null, onBehalfOf?: string) {
+export async function castVote(candidateId: string, vote: (typeof t.voteValues)[number] | null, onBehalfOf?: string) {
   return run(async () => {
-    const v = z.enum(["must_do", "interested", "neutral", "not_interested", "cannot"]).nullable().parse(vote);
+    const v = z.enum(t.voteValues).nullable().parse(vote);
     const user = await requireUser();
     const { candidate, member } = await candidateWithAccess(candidateId, user.id);
     let voterId = member.id;
