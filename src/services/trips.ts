@@ -188,6 +188,7 @@ export async function planSnapshot(tripId: string, budget?: { perPersonPlannedVn
           type: i.type,
           startTime: i.startTime,
           durationMin: i.durationMin,
+          participants: i.participants,
           activity: a
             ? {
                 weatherDependent: a.weatherDependent,

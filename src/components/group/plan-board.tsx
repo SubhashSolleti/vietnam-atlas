@@ -14,11 +14,14 @@ import {
   DragOverlay,
   KeyboardSensor,
   MouseSensor,
+  pointerWithin,
+  rectIntersection,
   TouchSensor,
   useDraggable,
   useDroppable,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
@@ -29,6 +32,7 @@ import { Money } from "@/components/catalog/price";
 import { Avatar } from "@/components/ui/avatar";
 import { useToast } from "@/components/ui/toast";
 import { isStandIn } from "@/lib/party";
+import { dayCapacity } from "@/lib/personal-plans";
 import { cn, formatDay, formatDuration } from "@/lib/utils";
 import { DayPdfLink, type PlanPdf } from "./base-plan-pdf";
 import type { BoardMember, Pick, PickDay, PickExtra, PickItem, Vote } from "./picks-panel";
@@ -38,7 +42,33 @@ const IN: Vote[] = ["must_do", "interested"];
 const OUT_LABEL: Partial<Record<Vote, string>> = { not_interested: "Skipping", cannot: "Can't make it", done_before: "Already done" };
 
 type CardKind = "base" | "extra" | "idea" | "out" | "joinable";
-type DragData = { activityId: string; title: string; kind: CardKind; homeDayId: string | null; place: string | null };
+type DragData = { activityId: string; title: string; kind: CardKind; homeDayId: string | null; place: string | null; durationMin?: number | null };
+
+// Drop on the column under the pointer (a wide card can overlap two); the keyboard has no pointer, so it uses overlap.
+const collision: CollisionDetection = (args) => {
+  const hits = pointerWithin(args);
+  return hits.length ? hits : rectIntersection(args);
+};
+// Scroll the board gently near its edges, and never the page itself: a fast scroll ran a drag past the column you aimed for.
+// (Snapping is off while dragging, or each small step snaps a whole column and the board races to its end.)
+const autoScroll = {
+  threshold: { x: 0.12, y: 0.1 },
+  acceleration: 3,
+  canScroll: (el: Element) => el !== document.scrollingElement && el !== document.documentElement && el !== document.body,
+};
+
+/** "Days 9–12 and 14": a place's days, as short as possible. */
+export function dayRanges(ns: number[]) {
+  const runs: string[] = [];
+  for (let i = 0; i < ns.length; i++) {
+    let j = i;
+    while (j + 1 < ns.length && ns[j + 1] === ns[j]! + 1) j++;
+    runs.push(j > i ? `${ns[i]}–${ns[j]}` : `${ns[i]}`);
+    i = j;
+  }
+  const label = ns.length === 1 ? "Day" : "Days";
+  return runs.length ? `${label} ${runs.length > 1 ? `${runs.slice(0, -1).join(", ")} and ${runs.at(-1)}` : runs[0]}` : "";
+}
 
 export function PlanBoard({
   days,
@@ -48,6 +78,7 @@ export function PlanBoard({
   editable,
   personId,
   personName,
+  readOnlyNote,
   groupSize,
   pickOf,
   setPick,
@@ -61,6 +92,8 @@ export function PlanBoard({
   personId: string;
   /** "you", or the traveller's name. */
   personName: string;
+  /** Shown above a board you can't change, saying who can. */
+  readOnlyNote?: React.ReactNode;
   /** Everyone expected on the trip; those not joined yet count as going to base-plan activities. */
   groupSize: number;
   pickOf: (activityId: string, memberId: string) => Pick | undefined;
@@ -90,10 +123,7 @@ export function PlanBoard({
   }, [days]);
   const placeName = (id: string | null) => places.find((p) => p.id === id)?.name ?? "that stop";
   const daysAt = (placeId: string | null) => days.filter((d) => d.destinationId === placeId);
-  const range = (placeId: string | null) => {
-    const ns = daysAt(placeId).map((d) => dayN.get(d.id)!);
-    return ns.length ? (ns.length === 1 ? `Day ${ns[0]}` : `Days ${ns[0]}–${ns.at(-1)}`) : "";
-  };
+  const range = (placeId: string | null) => dayRanges(daysAt(placeId).map((d) => dayN.get(d.id)!));
 
   // Where each activity sits on this person's board.
   const scheduled = useMemo(() => new Set(days.flatMap((d) => d.items.flatMap((i) => (i.activityId ? [i.activityId] : [])))), [days]);
@@ -110,6 +140,12 @@ export function PlanBoard({
       const chosen = p!.dayId && daysAt(e.destinationId).some((x) => x.id === p!.dayId) ? p!.dayId : daysAt(e.destinationId)[0]?.id;
       return chosen === d.id;
     });
+  // Minutes this person is busy on a day, counted the way the plan builder counts them.
+  const loadOf = (d: PickDay, extra = 0) =>
+    d.items.reduce((sum, i) => (i.type === "note" || i.type === "accommodation" || !includes(i) || (i.activityId && i.type === "activity" && isOut(mine(i.activityId)?.vote)) ? sum : sum + (i.durationMin ?? 0)), 0) +
+    extrasOnDay(d).reduce((sum, e) => sum + e.durationMin, 0) +
+    extra;
+  const capacityOf = (d: PickDay) => dayCapacity({ isFirst: d.id === days[0]?.id, isLast: d.id === days.at(-1)?.id }, d.items.map((i) => ({ type: i.type, startTime: i.time })));
   const notDoing = [
     ...days.flatMap((d) => d.items.filter((i) => i.activityId && i.type === "activity" && isOut(mine(i.activityId)?.vote)).map((i) => ({ i, d }))),
   ];
@@ -141,6 +177,25 @@ export function PlanBoard({
     }
     const current = mine(d.activityId)?.vote;
     setPick(d.activityId, current === "must_do" ? "must_do" : "interested", dayId);
+    added(d, day);
+  };
+  /** Says where an idea went, and warns when the day looks too full for it. */
+  const added = (d: { title: string; activityId: string; durationMin?: number | null }, day: PickDay) => {
+    const already = extrasOnDay(day).some((e) => e.activityId === d.activityId);
+    const load = loadOf(day, already ? 0 : (d.durationMin ?? 0));
+    const others = daysAt(day.destinationId).length > 1;
+    const cap = capacityOf(day);
+    if (load > cap)
+      toast({
+        tone: "info",
+        title: `Added to Day ${dayN.get(day.id)}, but it looks full`,
+        description: `${cap < 12 * 60 ? `There's only about ${Math.round(cap / 60)}h around the flights that day` : `That's about ${Math.round(load / 60)}h planned`}. ${others ? `If it doesn't fit, the plan builder puts it on another ${placeName(day.destinationId)} day.` : "Consider skipping something that day."}`,
+      });
+    else toast({ tone: "success", title: `${d.title} added to Day ${dayN.get(day.id)}` });
+  };
+  const addIdea = (e: PickExtra, dayId: string) => {
+    setPick(e.activityId, mine(e.activityId)?.vote === "must_do" ? "must_do" : "interested", dayId);
+    added(e, days.find((x) => x.id === dayId)!);
   };
   const toOut = (d: DragData, vote: Vote = "not_interested") => setPick(d.activityId, vote, d.kind === "base" || d.homeDayId ? undefined : null);
   const toIdeas = (d: DragData) => {
@@ -171,7 +226,13 @@ export function PlanBoard({
   const announcements = {
     onDragStart: ({ active }: { active: { data: { current?: unknown } } }) => `Picked up ${(active.data.current as DragData).title}.`,
     onDragOver: ({ over }: { over: { id: string | number } | null }) => (over ? `Over ${columnName(String(over.id))}.` : "Not over a column."),
-    onDragEnd: ({ over, active }: { over: { id: string | number } | null; active: { data: { current?: unknown } } }) => `${(active.data.current as DragData).title} dropped${over ? ` on ${columnName(String(over.id))}` : ""}.`,
+    onDragEnd: ({ over, active }: { over: { id: string | number } | null; active: { data: { current?: unknown } } }) => {
+      const d = active.data.current as DragData;
+      if (!over) return `${d.title} dropped outside the board. Nothing changed.`;
+      const id = String(over.id);
+      const ok = !id.startsWith("day:") || (d.kind === "base" || d.kind === "joinable" || (d.kind === "out" && d.homeDayId) ? d.homeDayId === id.slice(4) : days.find((x) => x.id === id.slice(4))?.destinationId === d.place);
+      return ok ? `${d.title} moved to ${columnName(id)}.` : `${d.title} can't go on ${columnName(id)}. Nothing changed.`;
+    },
     onDragCancel: ({ active }: { active: { data: { current?: unknown } } }) => `Cancelled. ${(active.data.current as DragData).title} stays where it was.`,
   };
   const columnName = (id: string) => (id === "out" ? "Not doing" : id === "ideas" ? "Ideas" : `Day ${dayN.get(id.slice(4))}`);
@@ -182,25 +243,27 @@ export function PlanBoard({
     <div className="mt-6">
       <div className="mb-3 flex flex-wrap items-center gap-1.5 text-xs" aria-label="Jump to a column">
         <span className="mr-1 text-muted">Jump to</span>
-        <button type="button" onClick={() => jump("col-ideas")} className="rounded-full border border-line bg-surface px-2.5 py-1 font-medium hover:border-ink">Ideas</button>
+        <button type="button" onClick={() => jump("col-ideas")} className="inline-flex h-8 items-center rounded-full border border-line bg-surface px-3 font-medium hover:border-ink">Ideas</button>
         {days.map((d) => (
-          <button key={d.id} type="button" onClick={() => jump(`col-${d.id}`)} className="rounded-full border border-line bg-surface px-2.5 py-1 tabular-nums hover:border-ink" title={`${formatDay(d.date)}${d.destinationName ? ` · ${d.destinationName}` : ""}`}>
+          <button key={d.id} type="button" onClick={() => jump(`col-${d.id}`)} className="inline-flex h-8 min-w-8 items-center justify-center rounded-full border border-line bg-surface px-2 tabular-nums hover:border-ink" title={`${formatDay(d.date)}${d.destinationName ? ` · ${d.destinationName}` : ""}`}>
             {dayN.get(d.id)}
           </button>
         ))}
-        <button type="button" onClick={() => jump("col-out")} className="rounded-full border border-line bg-surface px-2.5 py-1 font-medium hover:border-ink">Not doing</button>
+        <button type="button" onClick={() => jump("col-out")} className="inline-flex h-8 items-center rounded-full border border-line bg-surface px-3 font-medium hover:border-ink">Not doing</button>
       </div>
-      {!editable && <p className="mb-3 rounded-md bg-surface-2 px-4 py-2.5 text-sm">You're looking at <strong>{personName}</strong>'s board. Only they can change it.</p>}
+      {!editable && <p className="mb-3 rounded-md bg-surface-2 px-4 py-2.5 text-sm">{readOnlyNote ?? <>You're looking at <strong>{personName}</strong>'s board. Only they can change it.</>}</p>}
 
       <DndContext
         id="plan-board"
         sensors={sensors}
+        collisionDetection={collision}
+        autoScroll={autoScroll}
         onDragStart={onDragStart}
         onDragEnd={onDragEnd}
         onDragCancel={() => setDrag(null)}
         accessibility={{ announcements, screenReaderInstructions: { draggable: "To move an activity, press space or enter, use the arrow keys to reach a column, then press space or enter to drop it. Press escape to cancel. Every move is also available from the buttons on the card." } }}
       >
-        <div className="-mx-4 flex snap-x snap-mandatory gap-3 overflow-x-auto px-4 pb-4 md:mx-0 md:snap-none md:px-0" role="list" aria-label={`${personName === "you" ? "Your" : `${personName}'s`} board`}>
+        <div className={cn("-mx-4 flex gap-3 overflow-x-auto px-4 pb-4 md:mx-0 md:snap-none md:px-0", !drag && "snap-x snap-mandatory")} role="list" aria-label={`${personName === "you" ? "Your" : `${personName}'s`} board`}>
           {/* Ideas */}
           <Column id="ideas" domId="col-ideas" tone="ideas" highlight={drag ? (drag.kind === "extra" || drag.kind === "out") && !drag.homeDayId : null}
             header={<><p className="flex items-center gap-1.5 font-semibold"><Lightbulb className="size-4 text-accent" aria-hidden />Ideas</p><p className="text-xs text-muted">{ideas.length} more things to do at places on the route</p></>}>
@@ -220,11 +283,11 @@ export function PlanBoard({
             </div>
             {filteredIdeas.length === 0 && <p className="px-1 py-3 text-sm text-muted">{q ? "Nothing matches that search." : "Every idea here is already on the board."}</p>}
             {filteredIdeas.slice(0, shown).map((e) => (
-              <Card key={e.activityId} data={{ activityId: e.activityId, title: e.title, kind: "idea", homeDayId: null, place: e.destinationId }} editable={editable}
-                title={e.title} slug={e.slug} meta={<>{placeName(e.destinationId)} · {formatDuration(e.durationMin)} · {priceText(e)}</>} people={fansOf(e.activityId)} peopleLabel="want to do this">
+              <Card key={e.activityId} data={{ activityId: e.activityId, title: e.title, kind: "idea", homeDayId: null, place: e.destinationId, durationMin: e.durationMin }} editable={editable}
+                title={e.title} slug={e.slug} meta={<><strong className="font-semibold text-ink">{placeName(e.destinationId)}</strong> · {formatDuration(e.durationMin)} · {priceText(e)}</>} people={fansOf(e.activityId)} peopleLabel="want to do this">
                 {editable && (
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                    <DayPicker label={`Add ${e.title} to a day`} days={daysAt(e.destinationId)} dayN={dayN} onPick={(dayId) => setPick(e.activityId, "interested", dayId)} />
+                    <DayPicker label={`Add ${e.title} to a day`} days={daysAt(e.destinationId)} dayN={dayN} full={(x) => loadOf(x, e.durationMin) > capacityOf(x)} onPick={(dayId) => addIdea(e, dayId)} />
                     <SmallButton onClick={() => setPick(e.activityId, "done_before", null)} icon={History}>Done before</SmallButton>
                   </div>
                 )}
@@ -248,7 +311,7 @@ export function PlanBoard({
                       {pdf && <DayPdfLink pdf={pdf} dayIndex={idx} title={`Day ${idx + 1} in the itinerary`} className="text-brand-ink" />}
                     </div>
                     <p className="font-serif text-lg leading-tight">{d.title ?? "Free day"}</p>
-                    {d.destinationName && <p className="text-xs opacity-80">{d.destinationName}</p>}
+                    <p className="text-xs opacity-80">{[d.destinationName, `${Math.round(loadOf(d) / 60)}h of ${Math.round(capacityOf(d) / 60)}h planned`].filter(Boolean).join(" · ")}</p>
                   </>
                 }
                 tone="day">
@@ -262,7 +325,7 @@ export function PlanBoard({
                   const going = goingTo(i);
                   return (
                     <Card key={i.id} data={data} editable={editable} muted={joinable} time={i.time} durationMin={i.durationMin} title={i.title} slug={i.slug} star={p?.vote === "must_do"}
-                      badge={joinable ? "Others are going" : "Base plan"} people={going} count={going.length + notJoinedGoing(i)} peopleLabel="going" total={Math.max(groupSize, members.length)}>
+                      badge={joinable ? "Others are going" : i.optIn ? "Extra pick" : "Base plan"} accent={!joinable && i.optIn} people={going} count={going.length + notJoinedGoing(i)} peopleLabel="going" total={Math.max(groupSize, members.length)}>
                       {editable && (
                         <div className="mt-2 flex flex-wrap gap-1.5">
                           {joinable ? (
@@ -283,13 +346,13 @@ export function PlanBoard({
                   const p = mine(e.activityId);
                   const others = fansOf(e.activityId).filter((m) => m.id !== personId);
                   return (
-                    <Card key={e.activityId} data={{ activityId: e.activityId, title: e.title, kind: "extra", homeDayId: null, place: e.destinationId }} editable={editable} accent
+                    <Card key={e.activityId} data={{ activityId: e.activityId, title: e.title, kind: "extra", homeDayId: null, place: e.destinationId, durationMin: e.durationMin }} editable={editable} accent
                       durationMin={e.durationMin} title={e.title} slug={e.slug} star={p?.vote === "must_do"} badge={personName === "you" ? "Your pick" : `${personName}'s pick`}
                       meta={<>Not in the group plan yet{others.length ? ` · ${others.length} other${others.length === 1 ? "" : "s"} want it` : ""}</>} people={fansOf(e.activityId)} peopleLabel="want to do this">
                       {editable && (
                         <div className="mt-2 flex flex-wrap items-center gap-1.5">
                           <StarButton on={p?.vote === "must_do"} title={e.title} onClick={() => setPick(e.activityId, p?.vote === "must_do" ? "interested" : "must_do")} />
-                          {daysAt(e.destinationId).length > 1 && <DayPicker label={`Move ${e.title} to another day`} verb="Move" days={daysAt(e.destinationId).filter((x) => x.id !== d.id)} dayN={dayN} onPick={(dayId) => setPick(e.activityId, p?.vote ?? "interested", dayId)} />}
+                          {daysAt(e.destinationId).length > 1 && <DayPicker label={`Move ${e.title} to another day`} verb="Move" days={daysAt(e.destinationId).filter((x) => x.id !== d.id)} dayN={dayN} full={(x) => loadOf(x, e.durationMin) > capacityOf(x)} onPick={(dayId) => addIdea(e, dayId)} />}
                           <SmallButton onClick={() => setPick(e.activityId, null, null)} icon={Undo2}>Remove</SmallButton>
                         </div>
                       )}
@@ -345,7 +408,7 @@ function Column({ id, domId, header, children, tone, highlight }: { id: string; 
       role="listitem"
       aria-label={typeof header === "string" ? header : undefined}
       className={cn(
-        "flex w-[82vw] max-w-80 shrink-0 snap-start flex-col rounded-md border bg-surface-2 sm:w-72",
+        "flex w-[82vw] max-w-80 shrink-0 snap-start scroll-mt-40 flex-col rounded-md border bg-surface-2 sm:w-72",
         highlight === true && "border-brand ring-2 ring-brand/30",
         highlight === false && "opacity-60",
         highlight === null && "border-line",
@@ -399,7 +462,7 @@ function Card({
     <article ref={setNodeRef} className={cn("rounded-md border bg-surface p-2.5 text-sm shadow-xs", accent ? "border-accent/50" : "border-line", muted && "border-dashed bg-surface/70", isDragging && "opacity-40")}>
       <div className="flex items-start gap-1.5">
         {editable && (
-          <button type="button" {...listeners} {...attributes} aria-label={`Move ${title}`} className="-ml-1 mt-0.5 shrink-0 cursor-grab touch-none rounded-sm p-0.5 text-muted hover:text-ink active:cursor-grabbing">
+          <button type="button" {...listeners} {...attributes} aria-label={`Move ${title}`} className="-my-1 -ml-2 shrink-0 cursor-grab touch-none rounded-sm p-1.5 text-muted hover:text-ink active:cursor-grabbing">
             <GripVertical className="size-4" aria-hidden />
           </button>
         )}
@@ -445,7 +508,7 @@ function FixedRow({ item }: { item: PickItem }) {
 
 function SmallButton({ onClick, icon: Icon, children }: { onClick: () => void; icon: typeof Check; children: React.ReactNode }) {
   return (
-    <button type="button" onClick={onClick} className="inline-flex h-7 items-center gap-1 rounded-full border border-line px-2.5 text-xs font-medium hover:border-ink">
+    <button type="button" onClick={onClick} className="inline-flex h-9 items-center gap-1 rounded-full border border-line px-3 text-xs font-medium hover:border-ink sm:h-8">
       <Icon className="size-3.5" aria-hidden />
       {children}
     </button>
@@ -454,7 +517,7 @@ function SmallButton({ onClick, icon: Icon, children }: { onClick: () => void; i
 
 function StarButton({ on, title, onClick }: { on: boolean; title: string; onClick: () => void }) {
   return (
-    <button type="button" aria-pressed={on} aria-label={`Must do: ${title}`} onClick={onClick} className={cn("inline-flex h-7 items-center gap-1 rounded-full border px-2.5 text-xs font-medium", on ? "border-accent bg-accent text-white" : "border-line hover:border-ink")}>
+    <button type="button" aria-pressed={on} aria-label={`Must do: ${title}`} onClick={onClick} className={cn("inline-flex h-9 items-center gap-1 rounded-full border px-3 text-xs font-medium sm:h-8", on ? "border-accent bg-accent text-white" : "border-line hover:border-ink")}>
       <Star className={cn("size-3.5", on && "fill-current")} aria-hidden />
       Must do
     </button>
@@ -471,7 +534,7 @@ function OutButtons({ vote, onVote, onBack, backLabel }: { vote: Vote; onVote: (
 }
 
 /** "Add to Day 6" for one matching day; a day menu when the place has several. */
-function DayPicker({ label, verb = "Add", days, dayN, onPick }: { label: string; verb?: string; days: PickDay[]; dayN: Map<string, number>; onPick: (dayId: string) => void }) {
+function DayPicker({ label, verb = "Add", days, dayN, full, onPick }: { label: string; verb?: string; days: PickDay[]; dayN: Map<string, number>; full?: (d: PickDay) => boolean; onPick: (dayId: string) => void }) {
   if (!days.length) return null;
   if (days.length === 1)
     return (
@@ -480,11 +543,11 @@ function DayPicker({ label, verb = "Add", days, dayN, onPick }: { label: string;
       </SmallButton>
     );
   return (
-    <label className="inline-flex h-7 items-center gap-1 rounded-full border border-line pr-1 pl-2.5 text-xs font-medium hover:border-ink">
+    <label className="inline-flex h-9 items-center gap-1 rounded-full border border-line pr-1 pl-3 text-xs font-medium hover:border-ink sm:h-8">
       <Plus className="size-3.5" aria-hidden />
-      <select aria-label={label} value="" onChange={(e) => e.target.value && onPick(e.target.value)} className="h-6 bg-transparent pr-1 text-xs font-medium focus:outline-none">
+      <select aria-label={label} value="" onChange={(e) => e.target.value && onPick(e.target.value)} className="h-8 bg-transparent pr-1 text-xs font-medium focus:outline-none sm:h-7">
         <option value="">{verb} to day…</option>
-        {days.map((d) => <option key={d.id} value={d.id}>Day {dayN.get(d.id)} · {formatDay(d.date)}</option>)}
+        {days.map((d) => <option key={d.id} value={d.id}>Day {dayN.get(d.id)} · {formatDay(d.date)}{full?.(d) ? " (full)" : ""}</option>)}
       </select>
     </label>
   );

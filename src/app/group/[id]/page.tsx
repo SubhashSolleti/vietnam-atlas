@@ -193,6 +193,7 @@ export default async function GroupWorkspace({ params, searchParams }: { params:
             inviteCode={trip.inviteCode}
             myRole={member.role}
             votePrivacy={trip.votePrivacy}
+            expected={expected}
             members={ws.members.map((m) => ({ id: m.id, displayName: m.displayName, avatarColor: m.avatarColor, role: m.role, travellerType: m.travellerType, coupleGroup: m.coupleGroup, joined: !!m.userId, isMe: m.id === member.id }))}
             trip={{ name: trip.name, startDate: trip.startDate, endDate: trip.endDate, budgetTargetInr: trip.budgetTargetInr, budgetMinInr: trip.budgetMinInr, budgetMaxInr: trip.budgetMaxInr, currency: trip.currency, description: trip.description }}
           />
@@ -276,6 +277,8 @@ async function picksData(tripId: string, ws: Awaited<ReturnType<typeof tripWorks
   const destBySlug = new Map(catalog.destinations.map((d) => [d.slug, d]));
   const actById = new Map(catalog.activities.map((a) => [a.id, a]));
   const candidateOf = new Map(ws.candidates.filter((c) => c.status !== "rejected").map((c) => [c.activityId, c.id]));
+  // Extras added from people's picks: only the people who want them go (see lib/personal-plans).
+  const optional = new Set(ws.candidates.filter((c) => c.participation === "optional").map((c) => c.activityId));
   const pickDays: PickDay[] = days.map((d) => ({
     id: d.id,
     date: d.date,
@@ -295,6 +298,7 @@ async function picksData(tripId: string, ws: Awaited<ReturnType<typeof tripWorks
         activityId: i.activityId,
         slug: i.activityId ? (actById.get(i.activityId)?.slug ?? null) : null,
         participants: i.participants,
+        optIn: !!i.activityId && optional.has(i.activityId),
       }))
       .sort((a, b) => (a.time ?? "99").localeCompare(b.time ?? "99")),
   }));

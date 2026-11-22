@@ -18,6 +18,7 @@ export function Dialog({
   size = "md",
   side,
   className,
+  bodyClassName,
 }: {
   open: boolean;
   onClose: () => void;
@@ -28,6 +29,7 @@ export function Dialog({
   size?: "sm" | "md" | "lg" | "xl";
   side?: "right" | "left" | "bottom";
   className?: string;
+  bodyClassName?: string;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -92,7 +94,7 @@ export function Dialog({
               <X className="size-5" />
             </button>
           </header>
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
+          <div className={cn("min-h-0 flex-1 overflow-y-auto px-5 py-4", bodyClassName)}>{children}</div>
           {footer && <footer className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-line px-5 py-3">{footer}</footer>}
         </div>
       )}

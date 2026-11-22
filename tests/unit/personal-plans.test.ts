@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { analyseCandidate } from "@/lib/consensus";
-import { buildPersonalPlans, isInPlan, type PlanItemInput, type PlanPick } from "@/lib/personal-plans";
+import { buildPersonalPlans, dayCapacity, isInPlan, type PlanItemInput, type PlanPick } from "@/lib/personal-plans";
 
 const members = ["subhash", "a", "b", "c", "d", "e", "f"].map((id) => ({ id }));
 const days = [
@@ -79,6 +79,26 @@ describe("buildPersonalPlans", () => {
       { activityId: "too-long", title: "too-long", reason: "day_full" },
       { activityId: "elsewhere", title: "elsewhere", reason: "no_day" },
     ]);
+  });
+
+  it("leaves an added extra pick alone on the next run: no vote doesn't put you in", () => {
+    // Run 1 added the beach for b; run 2, with nothing new, must not give it to everyone.
+    const beach = { ...item("i9", "d2", "beach", 120, ["b"]), optIn: true };
+    expect(buildPersonalPlans({ members, days, items: [beach], picks: [pick("beach", [{ memberId: "b", vote: "interested" }])] }).updates).toEqual([]);
+    // Someone joining in is added; the fan skipping it leaves.
+    const changes = buildPersonalPlans({ members, days, items: [beach], picks: [pick("beach", [{ memberId: "b", vote: "not_interested" }, { memberId: "c", vote: "must_do" }])] });
+    expect(changes.updates).toEqual([{ itemId: "i9", participants: ["c"], going: 1 }]);
+  });
+
+  it("only uses the hours before the flight home on the last day", () => {
+    const flight = { id: "f", dayId: "d3", type: "transport", activityId: null, durationMin: null, startTime: "12:20", participants: null };
+    const coffee = { ...item("i1", "d3", "coffee", 75), type: "free_time" };
+    const changes = buildPersonalPlans({ members, days, items: [flight, coffee], picks: [pick("temple", [{ memberId: "a", vote: "interested", dayId: "d3" }], ["hcm"], 120)] });
+    expect(changes.additions).toEqual([]);
+    expect(changes.unplaced).toEqual([{ activityId: "temple", title: "temple", reason: "day_full" }]);
+    expect(dayCapacity({ isFirst: false, isLast: true }, [{ type: "transport", startTime: "12:20" }])).toBe(80);
+    expect(dayCapacity({ isFirst: true, isLast: false }, [{ type: "transport", startTime: "15:30" }])).toBe(390);
+    expect(dayCapacity({ isFirst: false, isLast: false }, [{ type: "transport", startTime: "10:35" }])).toBe(720);
   });
 
   it("doesn't add an activity twice", () => {

@@ -22,6 +22,7 @@ export function MembersPanel({
   myRole,
   members,
   votePrivacy,
+  expected,
   trip,
 }: {
   tripId: string;
@@ -29,6 +30,8 @@ export function MembersPanel({
   myRole: "owner" | "editor" | "member";
   members: M[];
   votePrivacy: "named" | "anonymous";
+  /** The group size the owner expects. */
+  expected: number;
   trip: { name: string; startDate: string; endDate: string; budgetTargetInr: number | null; budgetMinInr: number | null; budgetMaxInr: number | null; currency: string; description: string | null };
 }) {
   const toast = useToast();
@@ -53,7 +56,12 @@ export function MembersPanel({
   return (
     <div className="grid gap-8 lg:grid-cols-12">
       <section className="lg:col-span-7" aria-labelledby="members-h">
-        <h2 id="members-h" className="mb-4 text-2xl">Travellers</h2>
+        <h2 id="members-h" className="text-2xl">Travellers</h2>
+        <p className="mt-1 mb-4 text-sm text-muted">
+          {expected > members.length
+            ? `${expected} travelling. ${members.length} here so far; the other ${expected - members.length} count as going to everything until they join with the invite link.`
+            : `${members.length} travelling.`}
+        </p>
         <ul className="divide-y divide-line rounded-md border border-line bg-surface">
           {members.map((m) => (
             <li key={m.id} className="flex items-center gap-3 px-4 py-3">
@@ -66,7 +74,7 @@ export function MembersPanel({
                   {m.role === "editor" && <Badge>Editor</Badge>}
                 </p>
                 <p className="text-xs text-muted">
-                  {m.joined ? "Joined" : "Added by name: not joined online yet"} · {m.travellerType === "couple" ? `Couple${m.coupleGroup ? ` ${m.coupleGroup}` : ""}` : "Solo traveller"}
+                  {m.joined ? "Joined" : "Not signed in: can join with this name"} · {m.travellerType === "couple" ? `Couple${m.coupleGroup ? ` ${m.coupleGroup}` : ""}` : "Solo traveller"}
                 </p>
               </div>
               {(m.isMe || canManage) && (

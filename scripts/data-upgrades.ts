@@ -8,7 +8,7 @@ import * as t from "../src/db/schema";
 import { applyBasePlan } from "../src/db/seed/base-plan";
 import { BASE_PLAN_VERSION } from "../src/content/base-plan";
 import { demoTrip, tripOwner } from "../src/content/demo-trip";
-import { NO_PLACEHOLDER_SEATS, UPGRADES_KEY } from "../src/db/upgrade-ids";
+import { NO_PLACEHOLDER_SEATS, UPGRADES_KEY, VENICE_SHOW_TIME } from "../src/db/upgrade-ids";
 
 
 
@@ -24,6 +24,7 @@ export async function runDataUpgrades(db: Database) {
   const steps: [string, (tx: Tx) => Promise<void>][] = [
     [BASE_PLAN_VERSION, basePlan],
     [NO_PLACEHOLDER_SEATS, removePlaceholderSeats],
+    [VENICE_SHOW_TIME, veniceShowTime],
   ];
   for (const [id, step] of steps) {
     if (applied.has(id)) continue;
@@ -37,6 +38,16 @@ export async function runDataUpgrades(db: Database) {
         .run();
     });
   }
+}
+
+/** Day 2's Grand World item gets the show's name and time from the PDF (only where nobody has edited the item). */
+async function veniceShowTime(tx: Tx) {
+  const changed = await tx
+    .update(t.itineraryItems)
+    .set({ title: "Grand World: canals, gondola and the Colors of Venice show", notes: "Dinner at Grand World. The Colors of Venice show starts at 8:30 PM." })
+    .where(and(eq(t.itineraryItems.title, "Grand World: canals, gondola and evening show"), eq(t.itineraryItems.notes, "Dinner at Grand World. Check the show time on the day.")))
+    .returning({ id: t.itineraryItems.id });
+  if (changed.length) console.log(`db:setup: Day 2 now names the Colors of Venice show (8:30 PM) in ${changed.length} itinerary item(s).`);
 }
 
 /** Subhash's 14-day plan becomes the group trip's base itinerary. */

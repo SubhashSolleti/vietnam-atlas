@@ -41,6 +41,8 @@ export interface PlanItem {
   type: string;
   startTime: string | null;
   durationMin: number | null;
+  /** Who is doing it (null or missing = everyone). A day is only overloaded if someone's own share of it is. */
+  participants?: string[] | null;
   activity?: {
     weatherDependent: boolean;
     decemberStatus: string;
@@ -152,7 +154,11 @@ export function computePlanAlerts(plan: PlanSnapshot): PlanAlert[] {
     }
 
     // 3. Overloaded day.
-    const activeMin = day.items.reduce((s, i) => s + (i.type === "accommodation" || i.type === "note" ? 0 : i.durationMin ?? 0), 0);
+    const counted = day.items.filter((i) => i.type !== "accommodation" && i.type !== "note");
+    const people = [...new Set(counted.flatMap((i) => i.participants ?? []))];
+    const loadOf = (who: string | null) => counted.reduce((sum, i) => sum + (!i.participants || (who && i.participants.includes(who)) ? (i.durationMin ?? 0) : 0), 0);
+    // The busiest person's day (or the whole day when everything is for everyone).
+    const activeMin = people.length ? Math.max(...people.map(loadOf), loadOf(null)) : loadOf(null);
     if (activeMin > MAX_ACTIVE_MIN) {
       alerts.push({
         id: `overload:${day.date}`,

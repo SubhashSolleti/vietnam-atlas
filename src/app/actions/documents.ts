@@ -37,8 +37,9 @@ export async function uploadBasePlanPdf(form: FormData) {
     const bytes = new Uint8Array(await file.arrayBuffer());
     if (!isPdf(bytes)) throw new UserError("That file isn't a PDF.");
     const { totalPages, text } = await pageTexts(bytes);
-    const dayPages = findDayPages(text, daysBetween(trip.startDate, trip.endDate) + 1);
-    const fileName = (file.name || "itinerary.pdf").replace(/[^\p{L}\p{N} ._()-]/gu, "").slice(0, 120) || "itinerary.pdf";
+    const dayCount = daysBetween(trip.startDate, trip.endDate) + 1;
+    const dayPages = findDayPages(text, dayCount);
+    const fileName = (file.name || "itinerary.pdf").replace(/[^\p{L}\p{N} ._()-]/gu, "").replace(/\s+/g, " ").trim().slice(0, 120) || "itinerary.pdf";
     const row = { fileName, contentType: "application/pdf", sizeBytes: bytes.byteLength, pageCount: totalPages, dayPages, data: Buffer.from(bytes), uploadedBy: member.id, createdAt: new Date().toISOString() };
     await db
       .insert(t.tripDocuments)
@@ -47,7 +48,7 @@ export async function uploadBasePlanPdf(form: FormData) {
       .run();
     await db.update(t.trips).set({ updatedAt: new Date().toISOString() }).where(eq(t.trips.id, tripId)).run();
     revalidatePath("/", "layout");
-    return { pageCount: totalPages, daysFound: dayPages.filter((p) => p != null).length };
+    return { pageCount: totalPages, daysFound: dayPages.filter((p) => p != null).length, dayCount };
   });
 }
 

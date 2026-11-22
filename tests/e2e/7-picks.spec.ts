@@ -123,12 +123,17 @@ test("Scenario 7: the owner attaches the base plan, travellers make their own bo
   await expect(owner.getByText(/[34] of 7 have joined/).first()).toBeVisible();
   await owner.getByRole("button", { name: "Preview changes" }).click();
   const dlg = owner.getByRole("dialog", { name: "Build personal plans" });
-  await expect(dlg.getByText(/VinWonders Phu Quoc \(6 going\)/)).toBeVisible();
-  await expect(dlg.getByText(/Parasailing \(1 going, time to be set\)/)).toBeVisible();
+  await expect(dlg.getByText(/VinWonders Phu Quoc \(6 of 7 going: everyone except Kiran\)/)).toBeVisible();
+  await expect(dlg.getByText(/Parasailing \(1 of 7: Kiran\)/)).toBeVisible();
+  await expect(dlg.getByText(/count as going to the base plan/)).toBeVisible();
   // Placed on a Phu Quoc day with room in Kiran's own plan (the chosen day when it fits: see the unit tests).
   await expect(dlg.getByText(/(Sat 12|Sun 13|Mon 14) Dec: Parasailing/)).toBeVisible();
   await dlg.getByRole("button", { name: "Apply to itinerary" }).click();
   await toast(owner, "Personal plans updated");
+  // Running it again changes nothing: Kiran's extra pick stays Kiran's, it doesn't become everyone's.
+  await owner.getByRole("button", { name: "Preview changes" }).click();
+  await expect(dlg.getByText("The itinerary already matches everyone's picks.")).toBeVisible();
+  await dlg.getByRole("button", { name: "Cancel" }).click();
 
   // The extra picks are in the itinerary, for Kiran only.
   await owner.goto("/trip");

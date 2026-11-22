@@ -14,8 +14,11 @@ import { getCatalog } from "@/services/catalog";
 import { assertMember, membersOf } from "@/services/trips";
 
 export type PlanSummary = {
-  updated: { title: string; date: string; going: number }[];
-  added: { title: string; date: string; going: number }[];
+  /** Everyone sharing the trip, joined or not. */
+  total: number;
+  /** who: the names of the people going (or, when most are, of those not going), for the owner to check. */
+  updated: { title: string; date: string; going: number; who: string }[];
+  added: { title: string; date: string; going: number; who: string; movedFrom: string | null }[];
   unplaced: { title: string; reason: "no_day" | "day_full" }[];
   nobodyGoing: { title: string; date: string }[];
   applied: boolean;
@@ -44,7 +47,8 @@ export async function generatePersonalPlans(tripId: string, input: { apply: bool
     const changes: PlanChanges = buildPersonalPlans({
       members: party.map((id) => ({ id })),
       days,
-      items,
+      // Extras added from picks (optional on the shortlist) are opt-in; base-plan activities are for everyone.
+      items: items.map((i) => ({ ...i, optIn: candidates.find((c) => c.activityId === i.activityId)?.participation === "optional" })),
       picks: candidates.flatMap((c) => {
         const a = actById.get(c.activityId);
         if (!a) return [];
@@ -64,11 +68,33 @@ export async function generatePersonalPlans(tripId: string, input: { apply: bool
 
     const dateOf = new Map(days.map((d) => [d.id, d.date]));
     const itemById = new Map(items.map((i) => [i.id, i]));
+    const nameOf = new Map(members.map((m) => [m.id, m.displayName]));
+    const names = (ids: string[]) => {
+      const joined = ids.filter((id) => nameOf.has(id)).map((id) => nameOf.get(id)!);
+      const others = ids.length - joined.length;
+      return [...joined, ...(others ? [`${others} not joined yet`] : [])].join(", ");
+    };
+    // Name whichever side is shorter: "everyone except Priya" reads better than six names.
+    const who = (participants: string[] | null) => {
+      const going = participants ?? party;
+      if (going.length === party.length) return "everyone";
+      const out = party.filter((id) => !going.includes(id));
+      return going.length <= out.length ? names(going) : `everyone except ${names(out)}`;
+    };
+    const byDate = <T extends { date: string }>(xs: T[]) => xs.sort((a, b) => a.date.localeCompare(b.date));
     const summary: PlanSummary = {
-      updated: changes.updates.map((u) => ({ title: itemById.get(u.itemId)!.title, date: dateOf.get(itemById.get(u.itemId)!.dayId)!, going: u.going })),
-      added: changes.additions.map((a) => ({ title: a.title, date: a.date, going: a.participants?.length ?? party.length })),
+      total: party.length,
+      updated: byDate(changes.updates.map((u) => ({ title: itemById.get(u.itemId)!.title, date: dateOf.get(itemById.get(u.itemId)!.dayId)!, going: u.going, who: who(u.participants) }))),
+      added: byDate(
+        changes.additions.map((a) => {
+          // The day most fans chose, if the builder had to use another one.
+          const chosen = votes.filter((v) => candidates.find((c) => c.id === v.candidateId)?.activityId === a.activityId && v.dayId).map((v) => v.dayId!);
+          const top = chosen.sort((x, y) => chosen.filter((c) => c === y).length - chosen.filter((c) => c === x).length)[0];
+          return { title: a.title, date: a.date, going: a.participants?.length ?? party.length, who: who(a.participants), movedFrom: top && top !== a.dayId ? (dateOf.get(top) ?? null) : null };
+        }),
+      ),
       unplaced: changes.unplaced.map((u) => ({ title: u.title, reason: u.reason })),
-      nobodyGoing: changes.nobodyGoing.map((id) => ({ title: itemById.get(id)!.title, date: dateOf.get(itemById.get(id)!.dayId)! })),
+      nobodyGoing: byDate(changes.nobodyGoing.map((id) => ({ title: itemById.get(id)!.title, date: dateOf.get(itemById.get(id)!.dayId)! }))),
       applied: false,
     };
     if (!apply || (!changes.updates.length && !changes.additions.length)) return summary;

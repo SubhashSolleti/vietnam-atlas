@@ -25,8 +25,8 @@ export function daysBetween(start: string, end: string) {
 export const MAX_TRIP_DAYS = 60;
 export const MAX_TRAVELLERS = 30;
 
-/** Participant lists: unique ids only. */
+/** Participant lists: unique member ids, or stand-ins for expected travellers not joined yet ("expected:5", see lib/party). */
 export const participantList = z
-  .array(z.string().uuid())
+  .array(z.union([z.string().uuid(), z.string().regex(/^expected:\d{1,2}$/)]))
   .max(MAX_TRAVELLERS)
   .transform((list) => [...new Set(list)]);

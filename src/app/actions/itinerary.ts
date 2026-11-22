@@ -9,6 +9,7 @@ import { run, UserError } from "@/lib/action";
 import { requireUser } from "@/lib/auth";
 import { activityCostFromPrice } from "@/lib/budget-engine";
 import { isoDate, isoDateTime, participantList } from "@/lib/validation";
+import { partyIds } from "@/lib/party";
 import { assertMember, membersOf } from "@/services/trips";
 
 const time = z
@@ -32,9 +33,11 @@ async function dayAccess(dayId: string, userId: string) {
 }
 
 /** null = everyone. An empty or all-invalid selection also means everyone (the forms have no "nobody" option). */
+/** Keeps members and the trip's stand-ins for travellers not joined yet (lib/party); everyone is null. */
 async function cleanParticipants(tripId: string, list: string[] | null | undefined) {
   if (!list) return null;
-  const ids = new Set((await membersOf(tripId)).map((m) => m.id));
+  const trip = await db.select({ travellersCount: t.trips.travellersCount }).from(t.trips).where(eq(t.trips.id, tripId)).get();
+  const ids = new Set(partyIds((await membersOf(tripId)).map((m) => m.id), trip?.travellersCount ?? 0));
   const valid = [...new Set(list)].filter((x) => ids.has(x));
   return valid.length === ids.size || !valid.length ? null : valid;
 }
@@ -80,7 +83,8 @@ export async function addItineraryItem(dayId: string, input: z.input<typeof item
       const price = await db.select().from(t.activityPrices).where(and(eq(t.activityPrices.activityId, act.id), eq(t.activityPrices.isCurrent, true))).get();
       const cand = await db.select().from(t.tripCandidates).where(and(eq(t.tripCandidates.tripId, day.tripId), eq(t.tripCandidates.activityId, act.id))).get();
       if (cand) v.participants ??= cand.participants;
-      const party = (await cleanParticipants(day.tripId, v.participants))?.length ?? (await membersOf(day.tripId)).length;
+      const everyone = Math.max((await membersOf(day.tripId)).length, (await db.select({ n: t.trips.travellersCount }).from(t.trips).where(eq(t.trips.id, day.tripId)).get())?.n ?? 0);
+      const party = (await cleanParticipants(day.tripId, v.participants))?.length ?? everyone;
       const est = activityCostFromPrice(price, party);
       costVnd ??= cand?.agreedPriceVnd ?? est.amountVnd;
       costMode ??= cand?.agreedPriceVnd != null ? "per_person" : est.costMode;

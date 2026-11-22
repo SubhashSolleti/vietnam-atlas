@@ -2,7 +2,7 @@
 
 import { Check, ChevronDown, History, LayoutGrid, List, Plus, Printer, Sparkles, Star, X } from "lucide-react";
 import Link from "next/link";
-import { Fragment, useMemo, useState, useTransition } from "react";
+import { Fragment, useEffect, useMemo, useState, useTransition } from "react";
 import { generatePersonalPlans, type PlanSummary } from "@/app/actions/plans";
 import { pickActivity } from "@/app/actions/trips";
 import { Money } from "@/components/catalog/price";
@@ -32,6 +32,8 @@ export type PickItem = {
   activityId: string | null;
   slug: string | null;
   participants: string[] | null;
+  /** Added from people's picks: only those who want it go. */
+  optIn?: boolean;
 };
 export type PickDay = { id: string; date: string; title: string | null; notes: string | null; destinationId: string | null; destinationName: string | null; items: PickItem[] };
 export type PickExtra = { activityId: string; title: string; slug: string; durationMin: number; tier: "free" | "low" | "paid"; price: PriceInfo; destinationId: string };
@@ -76,7 +78,22 @@ export function PicksPanel({
 }) {
   const toast = useToast();
   const [view, setView] = useState<"board" | "list" | "everyone" | "plans">("board");
-  const [personId, setPersonId] = useState(myMemberId);
+  const [personId, setPersonIdState] = useState(myMemberId);
+  // Remember whose board you were looking at, across reloads in this tab.
+  const boardKey = `board-of:${tripId}`;
+  const setPersonId = (id: string) => {
+    setPersonIdState(id);
+    try {
+      sessionStorage.setItem(boardKey, id);
+    } catch {}
+  };
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem(boardKey);
+      if (saved && members.some((m) => m.id === saved)) setPersonIdState(saved);
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boardKey]);
   const [planFor, setPlanFor] = useState(myMemberId);
   // Optimistic picks, keyed by activity then member; server data replaces them on the next render.
   const [local, setLocal] = useState<Record<string, Record<string, Pick | null>>>({});
@@ -94,6 +111,9 @@ export function PicksPanel({
   // You edit your own board; owners and editors also edit for travellers who haven't joined online.
   const editable = person.id === myMemberId || (canManage && !person.joined);
   const personName = person.id === myMemberId ? "you" : person.name;
+  const readOnlyNote = person.joined
+    ? <>You're looking at <strong>{person.name}</strong>'s board. Only they can change it.</>
+    : <>You're looking at <strong>{person.name}</strong>'s board. {person.name} hasn't joined online, so {ownerName} picks for them.</>;
   // On anonymous trips you only see your own picks (and, for owners, offline travellers you pick for).
   const viewable = members.filter((m) => m.id === myMemberId || !anonymous || (canManage && !m.joined));
 
@@ -130,6 +150,14 @@ export function PicksPanel({
     });
   }, [days, extras]);
   const dayNumber = new Map(days.map((d, i) => [d.id, i + 1]));
+  // Extra picks (not in the itinerary yet) on the day this person chose, or the first day at that place.
+  const scheduledIds = useMemo(() => new Set(days.flatMap((d) => d.items.map((i) => i.activityId))), [days]);
+  const placedOn = (d: PickDay, memberId: string) =>
+    extras.filter((e) => {
+      if (scheduledIds.has(e.activityId) || e.destinationId !== d.destinationId || !IN.includes(voteOf(e.activityId, memberId) as Vote)) return false;
+      const at = days.filter((x) => x.destinationId === e.destinationId);
+      return (at.find((x) => x.id === pickOf(e.activityId, memberId)?.dayId) ?? at[0])?.id === d.id;
+    });
   const dayIndex = new Map(days.map((d, i) => [d.id, i]));
   const joinedCount = members.filter((m) => m.joined).length;
 
@@ -170,7 +198,7 @@ export function PicksPanel({
           <label className="flex items-center gap-2 text-sm">
             <span className="text-muted">Board of</span>
             <select className="field h-9 w-auto" value={person.id} onChange={(e) => setPersonId(e.target.value)}>
-              {viewable.map((m) => <option key={m.id} value={m.id}>{m.id === myMemberId ? `${m.name} (me)` : m.joined ? m.name : `${m.name} (not joined: you pick)`}</option>)}
+              {viewable.map((m) => <option key={m.id} value={m.id}>{m.id === myMemberId ? `${m.name} (me)` : m.joined ? m.name : `${m.name} (not joined${canManage ? ": you pick" : ""})`}</option>)}
             </select>
           </label>
         )}
@@ -189,13 +217,13 @@ export function PicksPanel({
 
       {canManage && <BuildPlans tripId={tripId} joined={joinedCount} expected={Math.max(expectedTravellers, members.length)} />}
 
-      {view === "board" && <PlanBoard days={days} extras={extras} members={members} pdf={pdf} editable={editable} personId={person.id} personName={personName} groupSize={Math.max(expectedTravellers, members.length)} pickOf={pickOf} setPick={setPick} />}
+      {view === "board" && <PlanBoard days={days} extras={extras} members={members} pdf={pdf} editable={editable} personId={person.id} personName={personName} readOnlyNote={readOnlyNote} groupSize={Math.max(expectedTravellers, members.length)} pickOf={pickOf} setPick={setPick} />}
 
       {view === "list" && (
         <div className="mt-6 space-y-8">
           {person.id !== myMemberId && (editable
             ? <p className="rounded-md bg-highlight-soft px-4 py-2.5 text-sm">You're recording picks for <strong>{person.name}</strong>. They can change them after joining.</p>
-            : <p className="rounded-md bg-surface-2 px-4 py-2.5 text-sm">You're looking at <strong>{person.name}</strong>'s picks. Only they can change them.</p>)}
+            : <p className="rounded-md bg-surface-2 px-4 py-2.5 text-sm">{readOnlyNote}</p>)}
           {stops.map((s, si) => (
             <section key={si} aria-label={s.name ?? "Stop"} className="space-y-4">
               {s.days.map((d) => (
@@ -207,6 +235,20 @@ export function PicksPanel({
                       <PlainRow key={i.id} item={i} />
                     ),
                   )}
+                  {placedOn(d, person.id).map((e) => (
+                    <li key={e.activityId} className="flex gap-3 px-4 py-3.5">
+                      <div className="w-16 shrink-0 text-xs text-muted">{formatDuration(e.durationMin)}</div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium">
+                          {voteOf(e.activityId, person.id) === "must_do" && <Star className="mr-1 inline size-3.5 -translate-y-px fill-current text-accent" aria-label="Must do" />}
+                          <Link href={`/experiences/${e.slug}`} className="hover:underline">{e.title}</Link>
+                          <span className="ml-1.5 rounded-full bg-accent/15 px-1.5 py-px text-[11px] font-medium text-accent">{personName === "you" ? "Your pick" : `${person.name}'s pick`}</span>
+                        </p>
+                        <p className="mt-0.5 text-sm text-muted">Not in the group plan yet. It joins when {ownerName} builds the personal plans.</p>
+                        {editable && <VoteButtons label={`${personName === "you" ? "Your" : `${person.name}'s`} pick for ${e.title}`} current={voteOf(e.activityId, person.id)} onVote={(v) => setVote(e.activityId, v)} />}
+                      </div>
+                    </li>
+                  ))}
                 </DayCard>
               ))}
               {s.extras.length > 0 && (
@@ -253,13 +295,14 @@ function TimeCol({ item }: { item: PickItem }) {
   );
 }
 
-function PlainRow({ item }: { item: PickItem }) {
+function PlainRow({ item, star, note }: { item: PickItem; star?: boolean; note?: string }) {
   return (
     <li className="flex gap-3 px-4 py-3 text-sm">
       <TimeCol item={item} />
       <div className="min-w-0">
-        <p className="font-medium">{item.title}</p>
+        <p className="font-medium">{star && <Star className="mr-1 inline size-3.5 -translate-y-px fill-current text-accent" aria-label="Must do" />}{item.title}</p>
         {item.notes && <p className="mt-0.5 text-muted">{item.notes}</p>}
+        {note && <p className="mt-0.5 text-xs text-warn">{note}</p>}
       </div>
     </li>
   );
@@ -446,11 +489,12 @@ function WhoIsIn({
   };
   return (
     <div className="mt-6 overflow-x-auto rounded-md border border-line bg-surface">
-      <table className="w-full min-w-[720px] text-sm">
+      {members.length > 2 && <p className="border-b border-line px-3 py-2 text-xs text-muted sm:hidden">Scroll sideways to see everyone →</p>}
+      <table className="w-full text-sm" style={{ minWidth: `${10 + members.length * 3.5}rem` }}>
         <caption className="sr-only">Who is doing each activity</caption>
         <thead>
           <tr className="border-b border-line bg-surface-2 text-left">
-            <th scope="col" className="sticky left-0 z-[1] bg-surface-2 px-3 py-2.5 font-semibold">Activity</th>
+            <th scope="col" className="sticky left-0 z-[1] w-40 max-w-40 bg-surface-2 px-3 py-2.5 font-semibold sm:w-auto sm:max-w-none">Activity</th>
             {members.map((m) => (
               <th key={m.id} scope="col" className="px-2 py-2.5 text-center font-medium">
                 <span className="inline-flex flex-col items-center gap-1"><Avatar name={m.name} color={m.color} size={24} muted={!m.joined} /><span className="max-w-20 truncate text-xs">{m.name}</span></span>
@@ -465,13 +509,13 @@ function WhoIsIn({
             return (
               <Fragment key={d.id}>
                 <tr className="border-b border-line bg-bg">
-                  <th scope="rowgroup" className="sticky left-0 z-[1] bg-bg px-3 py-1.5 text-left text-xs font-semibold tracking-wide text-muted uppercase">Day {dayNumber.get(d.id)} · {formatDay(d.date)}{d.destinationName ? ` · ${d.destinationName}` : ""}</th>
+                  <th scope="rowgroup" className="sticky left-0 z-[1] w-40 max-w-40 bg-bg px-3 py-1.5 text-left text-xs font-semibold tracking-wide text-muted uppercase sm:w-auto sm:max-w-none">Day {dayNumber.get(d.id)} · {formatDay(d.date)}{d.destinationName ? ` · ${d.destinationName}` : ""}</th>
                   {/* Repeated per day so you can still tell the columns apart after scrolling. */}
                   {members.map((m) => <td key={m.id} className="px-2 py-1.5 text-center" title={m.name}><Avatar name={m.name} color={m.color} size={18} muted={!m.joined} /></td>)}
                 </tr>
                 {rows.map((i) => (
                   <tr key={i.id} className="border-b border-line">
-                    <th scope="row" className="sticky left-0 z-[1] bg-surface px-3 py-2 text-left font-normal">{i.title}</th>
+                    <th scope="row" className="sticky left-0 z-[1] w-40 max-w-40 bg-surface px-3 py-2 text-left font-normal sm:w-auto sm:max-w-none">{i.title}</th>
                     {members.map((m) => <td key={m.id} className="px-2 py-2 text-center">{cell(voteOf(i.activityId, m.id), !i.participants || i.participants.includes(m.id))}</td>)}
                   </tr>
                 ))}
@@ -485,7 +529,7 @@ function WhoIsIn({
           )}
           {extraRows.map((e) => (
             <tr key={e.activityId} className="border-b border-line">
-              <th scope="row" className="sticky left-0 z-[1] bg-surface px-3 py-2 text-left font-normal">{e.title}</th>
+              <th scope="row" className="sticky left-0 z-[1] w-40 max-w-40 bg-surface px-3 py-2 text-left font-normal sm:w-auto sm:max-w-none">{e.title}</th>
               {members.map((m) => <td key={m.id} className="px-2 py-2 text-center">{cell(voteOf(e.activityId, m.id), false)}</td>)}
             </tr>
           ))}
@@ -527,7 +571,13 @@ function PersonalPlan({
     const chosen = pickOf(e.activityId, member.id)?.dayId;
     return at.find((d) => d.id === chosen)?.id ?? at[0]?.id ?? null;
   };
-  const skipped = days.flatMap((d) => d.items.filter((i) => isActivity(i) && !inPlan(i) && (i.participants === null || i.participants.includes(member.id))));
+  // Base-plan activities they're not doing: skipped on their board, or (after the plans are built) left out of the itinerary.
+  const skipped = days.flatMap((d) => d.items.filter((i) => isActivity(i) && !inPlan(i) && (OUT.includes(vote(i.activityId) as Vote) || (!!i.participants && !i.participants.includes(member.id) && !IN.includes(vote(i.activityId) as Vote)))));
+  // An extra pick the plan builder had to put on another day than the one they chose.
+  const movedNote = (i: PickItem, d: PickDay) => {
+    const chosen = pickOf(i.activityId, member.id)?.dayId;
+    return chosen && chosen !== d.id && dayNumber.has(chosen) ? `Picked for Day ${dayNumber.get(chosen)}, which was full, so it's on this day.` : undefined;
+  };
   return (
     <div className="mt-6 space-y-4 print:mt-0">
       <div className="flex items-center gap-3">
@@ -542,12 +592,12 @@ function PersonalPlan({
         const pending = waiting.filter((e) => dayOfPick(e) === d.id);
         return (
           <DayCard key={d.id} day={d} n={dayNumber.get(d.id)!} pdf={pdf} index={dayIndex.get(d.id)!}>
-            {items.map((i) => <PlainRow key={i.id} item={i} />)}
+            {items.map((i) => <PlainRow key={i.id} item={i} star={isActivity(i) && vote(i.activityId) === "must_do"} note={isActivity(i) ? movedNote(i, d) : undefined} />)}
             {pending.map((e) => (
               <li key={e.activityId} className="flex gap-3 px-4 py-3 text-sm">
                 <div className="w-16 shrink-0 text-xs text-muted">{formatDuration(e.durationMin)}</div>
                 <div className="min-w-0">
-                  <p className="font-medium">{e.title} <span className="ml-1 rounded-full bg-accent/15 px-1.5 py-px text-[11px] font-medium text-accent">Extra pick</span></p>
+                  <p className="font-medium">{vote(e.activityId) === "must_do" && <Star className="mr-1 inline size-3.5 -translate-y-px fill-current text-accent" aria-label="Must do" />}{e.title} <span className="ml-1 rounded-full bg-accent/15 px-1.5 py-px text-[11px] font-medium text-accent">Extra pick</span></p>
                   <p className="mt-0.5 text-muted">Time to be set when the personal plans are built.</p>
                 </div>
               </li>
@@ -601,10 +651,11 @@ function BuildPlans({ tripId, joined, expected }: { tripId: string; joined: numb
       >
         {preview && (
           <div className="space-y-4 text-sm">
-            <Section title="Who's going changes" items={preview.updated.map((u) => `${formatDay(u.date)}: ${u.title} (${u.going} going)`)} />
-            <Section title="Extra picks added" items={preview.added.map((a) => `${formatDay(a.date)}: ${a.title} (${a.going} going, time to be set)`)} />
+            {joined < expected && <p className="rounded-md bg-highlight-soft px-3 py-2">{joined} of {expected} have joined. The {expected - joined} who haven't count as going to the base plan, and get no extra picks.</p>}
+            <Section title="Who's going changes" items={preview.updated.map((u) => `${formatDay(u.date)}: ${u.title} (${u.going} of ${preview.total} going: ${u.who})`)} />
+            <Section title="Extra picks added" items={preview.added.map((a) => `${formatDay(a.date)}: ${a.title} (${a.going} of ${preview.total}: ${a.who}). Time to be set${a.movedFrom ? `. Picked for ${formatDay(a.movedFrom)}, which was full` : ""}.`)} />
             <Section title="Nobody is doing these any more" tone="warn" items={preview.nobodyGoing.map((n) => `${formatDay(n.date)}: ${n.title}. Kept in the plan; remove it if you agree.`)} />
-            <Section title="Couldn't place" tone="warn" items={preview.unplaced.map((u) => `${u.title}: ${u.reason === "no_day" ? "the route doesn't stop there" : "the days there are already full"}`)} />
+            <Section title="Couldn't place" tone="warn" items={preview.unplaced.map((u) => `${u.title}: ${u.reason === "no_day" ? "the route doesn't stop there" : "every day there is already full"}. Ask them to skip something to make room, or add it yourself in the itinerary.`)} />
           </div>
         )}
       </Dialog>

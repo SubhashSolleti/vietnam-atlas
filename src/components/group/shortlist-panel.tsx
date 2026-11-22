@@ -17,6 +17,7 @@ import { useToast } from "@/components/ui/toast";
 import { VOTE_LABELS } from "@/content/taxonomy";
 import type { ActivityCardData } from "@/lib/activity-filters";
 import type { CandidateAnalysis } from "@/lib/consensus";
+import { isStandIn } from "@/lib/party";
 import { cn } from "@/lib/utils";
 
 type Vote = keyof typeof VOTE_LABELS;
@@ -126,7 +127,9 @@ function CandidateCard({ c, myMemberId, canManage, votePrivacy, members, groupSi
     run(() => castVote(c.id, current === v ? null : v, proxyFor || undefined), proxyFor ? `Vote recorded for ${byMember.get(proxyFor)?.name}` : undefined);
   };
   const unjoined = members.filter((m) => !m.joined);
-  const participantIds = c.participants ?? members.map((m) => m.id);
+  // Stand-ins for travellers not joined yet (lib/party) are kept, but not shown as checkboxes.
+  const standIns = (c.participants ?? []).filter(isStandIn);
+  const participantIds = c.participants ? c.participants.filter((id) => !isStandIn(id)) : members.map((m) => m.id);
 
   return (
     <li className="overflow-hidden rounded-md border border-line bg-surface">
@@ -267,7 +270,7 @@ function CandidateCard({ c, myMemberId, canManage, votePrivacy, members, groupSi
                 <PriceEditor c={c} inrToVnd={fx.inrToVnd} onSave={(vnd, quote) => run(() => setCandidateParticipation(c.id, { participants: c.participants, agreedPriceVnd: vnd, priceIsQuote: quote }), "Price updated")} />
               </div>
               <fieldset>
-                <legend className="mb-2 text-sm font-semibold">Who's taking part? <span className="font-normal text-muted">({participantIds.length}/{members.length})</span></legend>
+                <legend className="mb-2 text-sm font-semibold">Who's taking part? <span className="font-normal text-muted">({participantIds.length} of {members.length}{standIns.length ? `, plus ${standIns.length} not joined yet` : ""})</span></legend>
                 <ul className="grid grid-cols-2 gap-1">
                   {members.map((m) => {
                     const on = participantIds.includes(m.id);
@@ -275,7 +278,7 @@ function CandidateCard({ c, myMemberId, canManage, votePrivacy, members, groupSi
                       <li key={m.id}>
                         <label className="flex items-center gap-2 text-sm">
                           <input type="checkbox" className="size-4 accent-[var(--brand)]" checked={on} disabled={pending}
-                            onChange={() => { const next = on ? participantIds.filter((x) => x !== m.id) : [...participantIds, m.id]; if (!next.length) return; run(() => setCandidateParticipation(c.id, { participants: next, participation: next.length === members.length ? "everyone" : "optional" })); }} />
+                            onChange={() => { const next = on ? participantIds.filter((x) => x !== m.id) : [...participantIds, m.id]; if (!next.length) return; run(() => setCandidateParticipation(c.id, { participants: [...next, ...standIns], participation: next.length === members.length ? "everyone" : "optional" })); }} />
                           {m.name}
                         </label>
                       </li>

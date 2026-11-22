@@ -10,6 +10,7 @@ import { Field, Input, Select, Textarea } from "@/components/ui/form";
 import { useToast } from "@/components/ui/toast";
 import { TRANSPORT_LABELS } from "@/content/taxonomy";
 import { formatInr, formatVnd, vndToInr } from "@/lib/money";
+import { isStandIn } from "@/lib/party";
 import { formatDay } from "@/lib/utils";
 import type { DayVM, DestVM, ItemVM, LegVM, MemberVM, SourceVM, StayVM } from "./types";
 
@@ -35,21 +36,27 @@ function MoneyInput({ label, name, vnd, onChange }: { label: string; name: strin
   const [inr, setInr] = useState(vnd ? String(Math.round(vndToInr(vnd, fx))) : "");
   return (
     <Field label={label} name={name} hint={inr ? `≈ ${formatVnd(Math.round(Number(inr) * fx.inrToVnd))}` : "Enter in rupees; stored in dong"}>
-      {(p) => <Input {...p} type="number" min={0} step={10} value={inr} onChange={(e) => { setInr(e.target.value); onChange(Math.round(Number(e.target.value || 0) * fx.inrToVnd)); }} />}
+      {(p) => <Input {...p} type="number" min={0} step="any" value={inr} onChange={(e) => { setInr(e.target.value); onChange(Math.round(Number(e.target.value || 0) * fx.inrToVnd)); }} />}
     </Field>
   );
 }
 
 function Participants({ members, value, onChange }: { members: MemberVM[]; value: string[] | null; onChange: (v: string[] | null) => void }) {
-  const ids = value ?? members.map((m) => m.id);
+  // Lists can also hold stand-ins for travellers who haven't joined yet (lib/party): kept as they are, and counted.
+  const standIns = value ? value.filter(isStandIn) : [];
+  const ids = value ? value.filter((id) => !isStandIn(id)) : members.map((m) => m.id);
+  const toggle = (id: string) => {
+    const next = ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
+    if (!next.length) return;
+    onChange(value === null && next.length === members.length ? null : [...next, ...standIns]);
+  };
   return (
     <fieldset>
-      <legend className="mb-1.5 text-sm font-medium">Who's taking part? <span className="font-normal text-muted">({ids.length}/{members.length})</span></legend>
+      <legend className="mb-1.5 text-sm font-medium">Who's taking part? <span className="font-normal text-muted">({ids.length} of {members.length}{value === null ? ", and anyone who joins later" : standIns.length ? `, plus ${standIns.length} not joined yet` : ""})</span></legend>
       <div className="grid grid-cols-2 gap-1 sm:grid-cols-3">
         {members.map((m) => (
           <label key={m.id} className="flex items-center gap-2 text-sm">
-            <input type="checkbox" className="size-4 accent-[var(--brand)]" checked={ids.includes(m.id)}
-              onChange={() => { const next = ids.includes(m.id) ? ids.filter((x) => x !== m.id) : [...ids, m.id]; onChange(next.length === members.length ? null : next.length ? next : ids); }} />
+            <input type="checkbox" className="size-4 accent-[var(--brand)]" checked={ids.includes(m.id)} onChange={() => toggle(m.id)} />
             {m.name}
           </label>
         ))}

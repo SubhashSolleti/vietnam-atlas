@@ -495,7 +495,7 @@ export async function setCandidateParticipation(
     const user = await requireUser();
     const { candidate } = await candidateWithAccess(candidateId, user.id, ["owner", "editor"]);
     const memberIds = new Set((await membersOf(candidate.tripId)).map((m) => m.id));
-    const participants = v.participants?.filter((p) => memberIds.has(p)) ?? null;
+    const participants = v.participants?.filter((p) => memberIds.has(p) || isStandIn(p)) ?? null;
     await db.update(t.tripCandidates)
       .set({
         participants: participants && participants.length === memberIds.size ? null : participants,

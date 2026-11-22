@@ -209,7 +209,7 @@ export const basePlanDays: BasePlanDay[] = [
     title: "VinWonders and Grand World",
     items: [
       { time: "09:30", durationMin: 420, activity: "phu-quoc-vinwonders", title: "VinWonders Phu Quoc", notes: "Water park slides, thrill rides and the aquarium. Alternative for the morning: Phu Quoc National Park." },
-      { time: "17:00", durationMin: 300, activity: "phu-quoc-grand-world-shows", title: "Grand World: canals, gondola and evening show", notes: "Dinner at Grand World. Check the show time on the day." },
+      { time: "17:00", durationMin: 300, activity: "phu-quoc-grand-world-shows", title: "Grand World: canals, gondola and the Colors of Venice show", notes: "Dinner at Grand World. The Colors of Venice show starts at 8:30 PM." },
     ],
   },
   {
