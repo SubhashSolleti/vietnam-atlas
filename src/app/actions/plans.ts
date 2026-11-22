@@ -10,6 +10,7 @@ import { activityCostFromPrice } from "@/lib/budget-engine";
 import type { Vote } from "@/lib/consensus";
 import { partyIds } from "@/lib/party";
 import { buildPersonalPlans, type PlanChanges } from "@/lib/personal-plans";
+import { formatDay } from "@/lib/utils";
 import { getCatalog } from "@/services/catalog";
 import { assertMember, membersOf } from "@/services/trips";
 
@@ -18,7 +19,8 @@ export type PlanSummary = {
   total: number;
   /** who: the names of the people going (or, when most are, of those not going), for the owner to check. */
   updated: { title: string; date: string; going: number; who: string }[];
-  added: { title: string; date: string; going: number; who: string; movedFrom: string | null }[];
+  /** movedFrom: the day most fans chose, when the builder had to use another; baseDay: a base activity moved here. */
+  added: { title: string; date: string; going: number; who: string; movedFrom: string | null; baseDay: string | null }[];
   unplaced: { title: string; reason: "no_day" | "day_full" }[];
   nobodyGoing: { title: string; date: string }[];
   applied: boolean;
@@ -47,8 +49,8 @@ export async function generatePersonalPlans(tripId: string, input: { apply: bool
     const changes: PlanChanges = buildPersonalPlans({
       members: party.map((id) => ({ id })),
       days,
-      // Extras added from picks (optional on the shortlist) are opt-in; base-plan activities are for everyone.
-      items: items.map((i) => ({ ...i, optIn: candidates.find((c) => c.activityId === i.activityId)?.participation === "optional" })),
+      // Items added from picks (extras, and copies for people who moved a base activity) are opt-in.
+      items: items.map((i) => ({ ...i, optIn: i.source === "picks" })),
       picks: candidates.flatMap((c) => {
         const a = actById.get(c.activityId);
         if (!a) return [];
@@ -90,7 +92,7 @@ export async function generatePersonalPlans(tripId: string, input: { apply: bool
           // The day most fans chose, if the builder had to use another one.
           const chosen = votes.filter((v) => candidates.find((c) => c.id === v.candidateId)?.activityId === a.activityId && v.dayId).map((v) => v.dayId!);
           const top = chosen.sort((x, y) => chosen.filter((c) => c === y).length - chosen.filter((c) => c === x).length)[0];
-          return { title: a.title, date: a.date, going: a.participants?.length ?? party.length, who: who(a.participants), movedFrom: top && top !== a.dayId ? (dateOf.get(top) ?? null) : null };
+          return { title: a.title, date: a.date, going: a.participants?.length ?? party.length, who: who(a.participants), movedFrom: !a.movedFrom && top && top !== a.dayId ? (dateOf.get(top) ?? null) : null, baseDay: a.movedFrom ? (dateOf.get(a.movedFrom) ?? null) : null };
         }),
       ),
       unplaced: changes.unplaced.map((u) => ({ title: u.title, reason: u.reason })),
@@ -114,10 +116,12 @@ export async function generatePersonalPlans(tripId: string, input: { apply: bool
       const nextSort = new Map<string, number>();
       for (const i of items) nextSort.set(i.dayId, Math.max(nextSort.get(i.dayId) ?? 0, i.sort + 1));
       for (const a of changes.additions) {
-        const cand = candidates.find((c) => c.activityId === a.activityId)!;
+        const cand = candidates.find((c) => c.activityId === a.activityId);
         const est = activityCostFromPrice(prices.get(a.activityId), a.participants?.length ?? party.length);
         const sort = nextSort.get(a.dayId) ?? 0;
         nextSort.set(a.dayId, sort + 1);
+        // A base activity some people moved to another day: same time and price as the group's, just for them.
+        const home = a.movedFrom ? items.find((i) => i.activityId === a.activityId && i.dayId === a.movedFrom) : undefined;
         await tx
           .insert(t.itineraryItems)
           .values({
@@ -127,14 +131,16 @@ export async function generatePersonalPlans(tripId: string, input: { apply: bool
             type: "activity",
             activityId: a.activityId,
             title: a.title,
+            startTime: a.startTime ?? null,
             durationMin: a.durationMin,
-            costVnd: cand.agreedPriceVnd ?? est.amountVnd,
-            costMode: cand.agreedPriceVnd != null ? "per_person" : est.costMode,
+            costVnd: home ? home.costVnd : (cand?.agreedPriceVnd ?? est.amountVnd),
+            costMode: home ? home.costMode : cand?.agreedPriceVnd != null ? "per_person" : est.costMode,
             participants: a.participants,
-            notes: "Added from the group's picks: set a time.",
+            source: "picks",
+            notes: home ? `Moved here from ${formatDay(a.movedFrom ? (dateOf.get(a.movedFrom) ?? "") : "")} on their boards.` : "Added from the group's picks: set a time.",
           })
           .run();
-        await tx.update(t.tripCandidates).set({ status: "scheduled", participants: a.participants, updatedAt: now }).where(eq(t.tripCandidates.id, cand.id)).run();
+        if (cand && !home) await tx.update(t.tripCandidates).set({ status: "scheduled", participants: a.participants, updatedAt: now }).where(eq(t.tripCandidates.id, cand.id)).run();
       }
       await tx.update(t.trips).set({ updatedAt: now }).where(eq(t.trips.id, trip.id)).run();
     });

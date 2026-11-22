@@ -6,21 +6,10 @@ import { z } from "zod";
 import { db, t } from "@/db/client";
 import { run, UserError } from "@/lib/action";
 import { requireUser } from "@/lib/auth";
-import { findDayPages, isPdf, MAX_PLAN_PDF_BYTES } from "@/lib/pdf-days";
+import { isPdf, MAX_PLAN_PDF_BYTES } from "@/lib/pdf-days";
+import { analyseItineraryPdf } from "@/lib/pdf-extract";
 import { daysBetween } from "@/lib/utils";
 import { assertMember } from "@/services/trips";
-
-/** Reads the text of every page, for finding where each day starts. A PDF without text (a scan) gives empty pages. */
-async function pageTexts(bytes: Uint8Array) {
-  const { extractText, getDocumentProxy } = await import("unpdf");
-  try {
-    const pdf = await getDocumentProxy(new Uint8Array(bytes));
-    const { totalPages, text } = await extractText(pdf, { mergePages: false });
-    return { totalPages, text };
-  } catch {
-    throw new UserError("That PDF couldn't be read. Try exporting it again, or saving it with Print → Save as PDF.");
-  }
-}
 
 /**
  * Attaches the owner's itinerary PDF to the trip as its base plan (replacing any earlier one). Everyone in the trip
@@ -36,11 +25,12 @@ export async function uploadBasePlanPdf(form: FormData) {
     if (file.size > MAX_PLAN_PDF_BYTES) throw new UserError("PDFs must be 4 MB or smaller. Try exporting it with smaller images.");
     const bytes = new Uint8Array(await file.arrayBuffer());
     if (!isPdf(bytes)) throw new UserError("That file isn't a PDF.");
-    const { totalPages, text } = await pageTexts(bytes);
     const dayCount = daysBetween(trip.startDate, trip.endDate) + 1;
-    const dayPages = findDayPages(text, dayCount);
+    const { pageCount: totalPages, dayPages, dayTexts } = await analyseItineraryPdf(bytes, dayCount).catch(() => {
+      throw new UserError("That PDF couldn't be read. Try exporting it again, or saving it with Print → Save as PDF.");
+    });
     const fileName = (file.name || "itinerary.pdf").replace(/[^\p{L}\p{N} ._()-]/gu, "").replace(/\s+/g, " ").trim().slice(0, 120) || "itinerary.pdf";
-    const row = { fileName, contentType: "application/pdf", sizeBytes: bytes.byteLength, pageCount: totalPages, dayPages, data: Buffer.from(bytes), uploadedBy: member.id, createdAt: new Date().toISOString() };
+    const row = { fileName, contentType: "application/pdf", sizeBytes: bytes.byteLength, pageCount: totalPages, dayPages, dayTexts, data: Buffer.from(bytes), uploadedBy: member.id, createdAt: new Date().toISOString() };
     await db
       .insert(t.tripDocuments)
       .values({ tripId, kind: "base_plan", ...row })

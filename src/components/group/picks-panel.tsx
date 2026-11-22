@@ -14,6 +14,7 @@ import { VOTE_LABELS } from "@/content/taxonomy";
 import { isStandIn } from "@/lib/party";
 import { cn, formatDay, formatDuration } from "@/lib/utils";
 import { BasePlanPdf, DayPdfLink, type PlanPdf } from "./base-plan-pdf";
+import { boardFor } from "./board-model";
 import { PlanBoard } from "./plan-board";
 
 export type Vote = keyof typeof VOTE_LABELS;
@@ -169,15 +170,15 @@ export function PicksPanel({
     <div>
       <details className="group rounded-md border border-line bg-surface">
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-3.5 text-sm [&::-webkit-details-marker]:hidden">
-          <span><strong>Your board starts as {ownerName}'s plan.</strong> <span className="text-muted">Drag things out, drag ideas in. {joinedCount} of {Math.max(expectedTravellers, members.length)} have joined.</span></span>
+          <span><strong>Your board starts as {ownerName}'s plan.</strong> <span className="text-muted">Make it yours: move, swap, skip or add things on any day. {joinedCount} of {Math.max(expectedTravellers, members.length)} have joined.</span></span>
           <span className="shrink-0 font-medium text-accent group-open:hidden">How it works</span>
           <ChevronDown className="hidden size-4 shrink-0 group-open:block" aria-hidden />
         </summary>
         <ol className="grid gap-2 border-t border-line px-5 py-4 text-sm text-muted md:grid-cols-4">
-          <li><strong className="text-ink">1.</strong> {ownerName}'s itinerary is the base plan: every day starts with it, and you're in for all of it.</li>
-          <li><strong className="text-ink">2.</strong> Drag what you'd skip, or have done before, to <em>Not doing</em>. Star your favourites.</li>
-          <li><strong className="text-ink">3.</strong> Drag anything from <em>Ideas</em> onto a day at that place to add it. On a phone, use the buttons on each card.</li>
-          <li><strong className="text-ink">4.</strong> Everyone can see everyone's board, and {ownerName} turns them into each person's plan.</li>
+          <li><strong className="text-ink">1.</strong> Every day starts as {ownerName}'s itinerary (the PDF), and you're in for all of it.</li>
+          <li><strong className="text-ink">2.</strong> Drag an activity to another day at the same place, or onto another activity to swap their days. Drag it to <em>Not doing</em> to skip it.</li>
+          <li><strong className="text-ink">3.</strong> Drag an idea onto a day to add it, or onto an activity to do it instead. On a phone, use the buttons on each card.</li>
+          <li><strong className="text-ink">4.</strong> Your changes are yours only. Everyone can see each other's boards, and {ownerName} turns them into each person's plan.</li>
         </ol>
       </details>
       <div className="mt-4"><BasePlanPdf tripId={tripId} pdf={pdf} ownerName={ownerName} canManage={canManage} compact /></div>
@@ -221,7 +222,7 @@ export function PicksPanel({
 
       {canManage && <BuildPlans tripId={tripId} joined={joinedCount} expected={Math.max(expectedTravellers, members.length)} />}
 
-      {view === "board" && <PlanBoard days={days} extras={extras} members={members} pdf={pdf} editable={editable} personId={person.id} personName={personName} readOnlyNote={readOnlyNote} groupSize={Math.max(expectedTravellers, members.length)} pickOf={pickOf} setPick={setPick} />}
+      {view === "board" && <PlanBoard days={days} extras={extras} members={members} pdf={pdf} ownerName={ownerName} editable={editable} personId={person.id} personName={personName} readOnlyNote={readOnlyNote} groupSize={Math.max(expectedTravellers, members.length)} pickOf={pickOf} setPick={setPick} />}
 
       {view === "list" && (
         <div className="mt-6 space-y-8">
@@ -234,7 +235,7 @@ export function PicksPanel({
                 <DayCard key={d.id} day={d} n={dayNumber.get(d.id)!} pdf={pdf} index={dayIndex.get(d.id)!}>
                   {d.items.map((i) =>
                     isActivity(i) ? (
-                      <ActivityRow key={i.id} item={i} members={members} anonymous={anonymous} mine={voteOf(i.activityId, person.id)} voteOf={(m) => voteOf(i.activityId, m)} onVote={editable ? (v) => setVote(i.activityId!, v) : undefined} who={personName} actingFor={person.id} groupSize={Math.max(expectedTravellers, members.length)} />
+                      <ActivityRow key={i.id} item={i} movedTo={(() => { const p = pickOf(i.activityId, person.id); return !i.optIn && p && IN.includes(p.vote) && p.dayId && p.dayId !== d.id && dayNumber.has(p.dayId) ? `${personName === "you" ? "You do" : `${person.name} does`} this on Day ${dayNumber.get(p.dayId)} instead` : undefined; })()} members={members} anonymous={anonymous} mine={voteOf(i.activityId, person.id)} voteOf={(m) => voteOf(i.activityId, m)} onVote={editable ? (v) => setVote(i.activityId!, v) : undefined} who={personName} actingFor={person.id} groupSize={Math.max(expectedTravellers, members.length)} />
                     ) : (
                       <PlainRow key={i.id} item={i} />
                     ),
@@ -322,7 +323,9 @@ function ActivityRow({
   who,
   actingFor,
   groupSize,
+  movedTo,
 }: {
+  movedTo?: string;
   item: PickItem;
   members: Member[];
   anonymous: boolean;
@@ -353,6 +356,7 @@ function ActivityRow({
           <p className="text-xs text-muted">{going} of {Math.max(groupSize, members.length)} going</p>
         </div>
         {item.notes && <p className="mt-0.5 text-sm text-muted">{item.notes}</p>}
+        {movedTo && <p className="mt-0.5 text-xs font-medium text-accent">{movedTo}</p>}
         {onVote ? (
           <VoteButtons label={`${who === "you" ? "Your" : `${who}'s`} pick for ${item.title}`} current={mine} onVote={onVote} defaultIn={!item.participants || item.participants.includes(actingFor)} />
         ) : (
@@ -565,39 +569,43 @@ function PersonalPlan({
 }) {
   if (anonymous) return <p className="mt-6 rounded-md border border-line bg-surface p-5 text-sm text-muted">This trip votes anonymously, so only your own plan is shown.</p>;
   const vote = (activityId: string | null) => pickOf(activityId, member.id)?.vote;
-  // An activity is in this person's plan if the itinerary includes them and they haven't opted out of it.
-  const inPlan = (i: PickItem) => (i.participants === null || i.participants.includes(member.id)) && !(isActivity(i) && OUT.includes(vote(i.activityId) as Vote));
-  const scheduled = new Set(days.flatMap((d) => d.items.map((i) => i.activityId)));
-  const waiting = extras.filter((e) => !scheduled.has(e.activityId) && IN.includes(vote(e.activityId) as Vote));
-  // Extra picks show on the day they were dropped on (or the first day at that place), marked as not booked in yet.
-  const dayOfPick = (e: PickExtra) => {
-    const at = days.filter((d) => d.destinationId === e.destinationId);
-    const chosen = pickOf(e.activityId, member.id)?.dayId;
-    return at.find((d) => d.id === chosen)?.id ?? at[0]?.id ?? null;
-  };
-  // Base-plan activities they're not doing: skipped on their board, or (after the plans are built) left out of the itinerary.
-  const skipped = days.flatMap((d) => d.items.filter((i) => isActivity(i) && !inPlan(i) && (OUT.includes(vote(i.activityId) as Vote) || (!!i.participants && !i.participants.includes(member.id) && !IN.includes(vote(i.activityId) as Vote)))));
+  // The same placement as their board: moved activities on their new day, skipped ones left out.
+  const board = boardFor(days, extras, member.id, (a, m) => pickOf(a, m));
+  const skipped = board.out.filter((o) => o.homeDayId).length;
+  const moved = board.days.reduce((n, b) => n + b.activities.filter((a) => a.movedFrom).length, 0);
+  const waiting = board.days.reduce((n, b) => n + b.extras.length, 0);
   // An extra pick the plan builder had to put on another day than the one they chose.
-  const movedNote = (i: PickItem, d: PickDay) => {
+  const builderMoved = (i: PickItem, d: PickDay) => {
     const chosen = pickOf(i.activityId, member.id)?.dayId;
-    return chosen && chosen !== d.id && dayNumber.has(chosen) ? `Picked for Day ${dayNumber.get(chosen)}, which was full, so it's on this day.` : undefined;
+    return i.optIn && chosen && chosen !== d.id && dayNumber.has(chosen) ? `Picked for Day ${dayNumber.get(chosen)}, which was full, so it's on this day.` : undefined;
   };
+  const summary = [
+    skipped ? `Sitting out ${skipped} activit${skipped === 1 ? "y" : "ies"}` : "Doing the full base plan",
+    moved ? `${moved} moved to another day` : "",
+    waiting ? `${waiting} extra pick${waiting === 1 ? "" : "s"}, not in the group itinerary yet` : "",
+  ].filter(Boolean);
   return (
     <div className="mt-6 space-y-4 print:mt-0">
       <div className="flex items-center gap-3">
         <Avatar name={member.name} color={member.color} size={40} />
         <div>
           <h2 className="font-serif text-2xl">{member.name}'s plan</h2>
-          <p className="text-sm text-muted">{skipped.length ? `Sitting out ${skipped.length} activit${skipped.length === 1 ? "y" : "ies"}` : "Doing the full base plan"}{waiting.length ? ` · ${waiting.length} extra pick${waiting.length === 1 ? "" : "s"}, not in the group itinerary yet` : ""}</p>
+          <p className="text-sm text-muted">{summary.join(" · ")}</p>
         </div>
       </div>
-      {days.map((d) => {
-        const items = d.items.filter(inPlan);
-        const pending = waiting.filter((e) => dayOfPick(e) === d.id);
+      {board.days.map((b) => {
+        const d = b.day;
+        const rows = [
+          ...b.fixed.filter((i) => i.participants === null || i.participants.includes(member.id)).map((i) => ({ time: i.time, item: i, movedFrom: null as string | null })),
+          ...b.activities.filter((a) => !a.joinable).map((a) => ({ time: a.item.time, item: a.item, movedFrom: a.movedFrom })),
+        ].sort((x, y) => (x.time ?? "99").localeCompare(y.time ?? "99"));
         return (
           <DayCard key={d.id} day={d} n={dayNumber.get(d.id)!} pdf={pdf} index={dayIndex.get(d.id)!}>
-            {items.map((i) => <PlainRow key={i.id} item={i} star={isActivity(i) && vote(i.activityId) === "must_do"} note={isActivity(i) ? movedNote(i, d) : undefined} />)}
-            {pending.map((e) => (
+            {rows.map(({ item: i, movedFrom }) => (
+              <PlainRow key={i.id} item={i} star={isActivity(i) && vote(i.activityId) === "must_do"}
+                note={movedFrom ? `Moved here from Day ${dayNumber.get(movedFrom)}, when the group does it.` : isActivity(i) ? builderMoved(i, d) : undefined} />
+            ))}
+            {b.extras.map((e) => (
               <li key={e.activityId} className="flex gap-3 px-4 py-3 text-sm">
                 <div className="w-16 shrink-0 text-xs text-muted">{formatDuration(e.durationMin)}</div>
                 <div className="min-w-0">
@@ -606,7 +614,7 @@ function PersonalPlan({
                 </div>
               </li>
             ))}
-            {!items.length && !pending.length && <li className="px-4 py-3 text-sm text-muted">Free day.</li>}
+            {!rows.length && !b.extras.length && <li className="px-4 py-3 text-sm text-muted">Free day.</li>}
           </DayCard>
         );
       })}
@@ -657,7 +665,8 @@ function BuildPlans({ tripId, joined, expected }: { tripId: string; joined: numb
           <div className="space-y-4 text-sm">
             {joined < expected && <p className="rounded-md bg-highlight-soft px-3 py-2">{joined} of {expected} have joined. The {expected - joined} who haven't count as going to the base plan, and get no extra picks.</p>}
             <Section title="Who's going changes" items={preview.updated.map((u) => `${formatDay(u.date)}: ${u.title} (${u.going} of ${preview.total} going: ${u.who})`)} />
-            <Section title="Extra picks added" items={preview.added.map((a) => `${formatDay(a.date)}: ${a.title} (${a.going} of ${preview.total}: ${a.who}). Time to be set${a.movedFrom ? `. Picked for ${formatDay(a.movedFrom)}, which was full` : ""}.`)} />
+            <Section title="Moved to another day" items={preview.added.filter((a) => a.baseDay).map((a) => `${formatDay(a.date)}: ${a.title} for ${a.who} (the group does it ${formatDay(a.baseDay!)}).`)} />
+            <Section title="Extra picks added" items={preview.added.filter((a) => !a.baseDay).map((a) => `${formatDay(a.date)}: ${a.title} (${a.going} of ${preview.total}: ${a.who}). Time to be set${a.movedFrom ? `. Picked for ${formatDay(a.movedFrom)}, which was full` : ""}.`)} />
             <Section title="Nobody is doing these any more" tone="warn" items={preview.nobodyGoing.map((n) => `${formatDay(n.date)}: ${n.title}. Kept in the plan; remove it if you agree.`)} />
             <Section title="Couldn't place" tone="warn" items={preview.unplaced.map((u) => `${u.title}: ${u.reason === "no_day" ? "the route doesn't stop there" : "every day there is already full"}. Ask them to skip something to make room, or add it yourself in the itinerary.`)} />
           </div>

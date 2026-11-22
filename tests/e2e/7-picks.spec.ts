@@ -55,6 +55,8 @@ test("Scenario 7: the owner attaches the base plan, travellers make their own bo
   await expect(vin).toBeVisible();
   // Not joined yet counts as going: 7 of 7.
   await expect(vin.getByText("Everyone going")).toBeVisible();
+  // Each day shows what Subhash's PDF says for it.
+  await expect(day2.getByText("Subhash's PDF")).toBeVisible();
 
   // The PDF opens on the page where Day 2 starts.
   await day2.getByRole("button", { name: /Day 2 in the itinerary PDF, page 2/ }).click();
@@ -90,6 +92,9 @@ test("Scenario 7: the owner attaches the base plan, travellers make their own bo
   await ideas.getByLabel("Search ideas").fill("Jet skiing");
   const jet = ideas.locator("article").filter({ hasText: "Jet skiing" }).getByRole("button", { name: "Move Jet skiing" });
   const day1 = column(page, /Day 1 ·/);
+  // Day 1 in view; Ideas stays beside the days while the page scrolls.
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await day1.scrollIntoViewIfNeeded();
   await jet.hover();
   await page.mouse.down();
   const target = (await day1.boundingBox())!;
@@ -98,10 +103,19 @@ test("Scenario 7: the owner attaches the base plan, travellers make their own bo
   await page.mouse.up();
   await expect(day1.locator("article").filter({ hasText: "Jet skiing" }).getByText("Your pick")).toBeVisible();
 
+  // Kiran moves the Dinh Cau temple visit from Day 1 to Day 3, just for himself.
+  const day3 = column(page, /Day 3 ·/);
+  const temple = day1.locator("article").filter({ hasText: "Dinh Cau Rock Temple" });
+  const moveTo = temple.getByRole("combobox", { name: /^Move Dinh Cau Rock Temple/ });
+  await moveTo.selectOption((await moveTo.locator("option", { hasText: "Day 3 ·" }).getAttribute("value"))!);
+  await expect(day3.locator("article").filter({ hasText: "Dinh Cau Rock Temple" }).getByText("Moved from Day 1")).toBeVisible();
+  await expect(day1.getByText("Dinh Cau Rock Temple")).toHaveCount(0);
+
   // Picks are saved on the server.
   await page.reload();
   await expect(column(page, /Not doing/).getByText("VinWonders Phu Quoc")).toBeVisible();
   await expect(column(page, /Day 1 ·/).getByRole("link", { name: "Jet skiing" })).toBeVisible();
+  await expect(column(page, /Day 3 ·/).getByRole("link", { name: "Dinh Cau Rock Temple" })).toBeVisible();
 
   // Everyone can see each other's boards.
   await page.getByLabel("Board of").selectOption({ label: "Subhash" });
@@ -113,7 +127,7 @@ test("Scenario 7: the owner attaches the base plan, travellers make their own bo
   // Kiran's personal plan leaves VinWonders out and shows the extra picks on their days.
   await page.getByRole("button", { name: "Personal plans" }).click();
   await expect(page.getByRole("heading", { name: "Kiran's plan" })).toBeVisible();
-  await expect(page.getByText("Sitting out 2 activities")).toBeVisible();
+  await expect(page.getByText(/Sitting out 2 activities · 1 moved to another day/)).toBeVisible();
   await expect(page.getByText("Parasailing")).toBeVisible();
   await expect(page.getByText("VinWonders Phu Quoc", { exact: true })).toHaveCount(0);
   w.assertClean();
@@ -126,6 +140,7 @@ test("Scenario 7: the owner attaches the base plan, travellers make their own bo
   await expect(dlg.getByText(/VinWonders Phu Quoc \(6 of 7 going: everyone except Kiran\)/)).toBeVisible();
   await expect(dlg.getByText(/Parasailing \(1 of 7: Kiran\)/)).toBeVisible();
   await expect(dlg.getByText(/count as going to the base plan/)).toBeVisible();
+  await expect(dlg.getByText(/Mon 14 Dec: Dinh Cau Rock Temple for Kiran \(the group does it Sat 12 Dec\)/)).toBeVisible();
   // Placed on a Phu Quoc day with room in Kiran's own plan (the chosen day when it fits: see the unit tests).
   await expect(dlg.getByText(/(Sat 12|Sun 13|Mon 14) Dec: Parasailing/)).toBeVisible();
   await dlg.getByRole("button", { name: "Apply to itinerary" }).click();

@@ -8,7 +8,9 @@ import * as t from "../src/db/schema";
 import { applyBasePlan } from "../src/db/seed/base-plan";
 import { BASE_PLAN_VERSION } from "../src/content/base-plan";
 import { demoTrip, tripOwner } from "../src/content/demo-trip";
-import { NO_PLACEHOLDER_SEATS, UPGRADES_KEY, VENICE_SHOW_TIME } from "../src/db/upgrade-ids";
+import { ITEM_SOURCE_AND_DAY_TEXTS, NO_PLACEHOLDER_SEATS, UPGRADES_KEY, VENICE_SHOW_TIME } from "../src/db/upgrade-ids";
+import { analyseItineraryPdf } from "../src/lib/pdf-extract";
+import { daysBetween } from "../src/lib/utils";
 
 
 
@@ -25,6 +27,7 @@ export async function runDataUpgrades(db: Database) {
     [BASE_PLAN_VERSION, basePlan],
     [NO_PLACEHOLDER_SEATS, removePlaceholderSeats],
     [VENICE_SHOW_TIME, veniceShowTime],
+    [ITEM_SOURCE_AND_DAY_TEXTS, itemSourceAndDayTexts],
   ];
   for (const [id, step] of steps) {
     if (applied.has(id)) continue;
@@ -37,6 +40,26 @@ export async function runDataUpgrades(db: Database) {
         .onConflictDoUpdate({ target: t.settings.key, set: { value: [...applied], updatedAt: new Date().toISOString() } })
         .run();
     });
+  }
+}
+
+/** Marks extras the plan builder added as "picks" items, and reads each day's text from attached itinerary PDFs. */
+async function itemSourceAndDayTexts(tx: Tx) {
+  const marked = await tx
+    .update(t.itineraryItems)
+    .set({ source: "picks" })
+    .where(eq(t.itineraryItems.notes, "Added from the group's picks: set a time."))
+    .returning({ id: t.itineraryItems.id });
+  if (marked.length) console.log(`db:setup: ${marked.length} itinerary item(s) marked as added from picks.`);
+  const docs = await tx.select({ id: t.tripDocuments.id, data: t.tripDocuments.data, startDate: t.trips.startDate, endDate: t.trips.endDate }).from(t.tripDocuments).innerJoin(t.trips, eq(t.trips.id, t.tripDocuments.tripId)).all();
+  for (const d of docs) {
+    try {
+      const { dayPages, dayTexts } = await analyseItineraryPdf(new Uint8Array(d.data), daysBetween(d.startDate, d.endDate) + 1);
+      await tx.update(t.tripDocuments).set({ dayPages, dayTexts }).where(eq(t.tripDocuments.id, d.id)).run();
+      console.log(`db:setup: itinerary PDF read: text found for ${dayTexts.filter(Boolean).length} of ${dayTexts.length} days.`);
+    } catch {
+      console.log("db:setup: an itinerary PDF couldn't be read; its days keep page links only.");
+    }
   }
 }
 

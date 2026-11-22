@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findDayPages, isPdf, pageForDay } from "@/lib/pdf-days";
+import { findDayPages, findDayTexts, isPdf, pageForDay, tidyDayText } from "@/lib/pdf-days";
 
 describe("findDayPages", () => {
   const pages = [
@@ -28,6 +28,29 @@ describe("findDayPages", () => {
   });
   it("handles a scanned PDF with no text", () => {
     expect(findDayPages(["", ""], 3)).toEqual([null, null, null]);
+  });
+});
+
+describe("findDayTexts", () => {
+  const pages = [
+    "Cover",
+    "T H E I T I N E R A R Y\nDay 1 · Phu Quoc Sat, Dec 12\n3:30–6:00 PM Arrival & Long Beach\nLand at 3:30 PM, check in and\nwatch sunset. 2.5\nhrs\n6:30–7:15 PM Dinh Cau Rock Temple\nWalk to the lit-\nup shrine. 45\nmins\nDay 2 · Phu Quoc Sun, Dec 13\n9:30 AM–4:30 PM VinWonders\nWater park. 7 hrs",
+    "VIETNAM · 12–25 DECEMBER 2026\nDay 3 · Ho Chi Minh\nCity Tue, Dec 15\nMorning Flight: Phu Quoc → HCMC Plan a flight, around\n10:30 AM; drop bags. 3 hrs\n2:30–6:30 PM Old Quarter\nEgg coffee. 4 hrs\nHanoi and the highlands",
+  ];
+  it("cuts each day's section, joins wrapped lines into one entry per time slot, and drops headers", () => {
+    expect(findDayTexts(pages, findDayPages(pages, 3))).toEqual([
+      "3:30–6:00 PM Arrival & Long Beach Land at 3:30 PM, check in and watch sunset. 2.5 hrs\n6:30–7:15 PM Dinh Cau Rock Temple Walk to the lit-up shrine. 45 mins",
+      "9:30 AM–4:30 PM VinWonders Water park. 7 hrs",
+      "Morning Flight: Phu Quoc → HCMC Plan a flight, around 10:30 AM; drop bags. 3 hrs\n2:30–6:30 PM Old Quarter Egg coffee. 4 hrs",
+    ]);
+  });
+  it("is null for days without a heading, and caps long days on a whole entry", () => {
+    expect(findDayTexts(["nothing here"], [null])).toEqual([null]);
+    const long = `Day 1 · X\n${Array.from({ length: 30 }, (_, i) => `${(i % 12) + 1}:00–${(i % 12) + 1}:30 PM Stop ${i} with a long description of the place.`).join("\n")}`;
+    const [t] = findDayTexts([long], [1], 300);
+    expect(t!.length).toBeLessThanOrEqual(302);
+    expect(t!.endsWith(" …")).toBe(true);
+    expect(tidyDayText("Day 4 · Hue: walk the citadel")).toBe("Hue: walk the citadel");
   });
 });
 

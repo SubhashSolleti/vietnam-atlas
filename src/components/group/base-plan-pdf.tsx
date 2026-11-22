@@ -10,7 +10,7 @@ import { useToast } from "@/components/ui/toast";
 import { MAX_PLAN_PDF_BYTES, pageForDay } from "@/lib/pdf-days";
 import { cn } from "@/lib/utils";
 
-export type PlanPdf = { url: string; fileName: string; sizeBytes: number; pageCount: number; dayPages: (number | null)[]; createdAt: string };
+export type PlanPdf = { url: string; fileName: string; sizeBytes: number; pageCount: number; dayPages: (number | null)[]; dayTexts: (string | null)[]; createdAt: string };
 
 const mb = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 

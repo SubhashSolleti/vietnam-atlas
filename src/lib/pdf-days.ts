@@ -40,6 +40,72 @@ export function findDayPages(pageTexts: string[], dayCount: number): (number | n
   });
 }
 
+// A line that starts an itinerary entry: "3:30–6:00 PM …", "9:30 AM–4:30 PM …", "7:00 AM–about", "6:30 PM Dinner…",
+// "Morning Flight…", "Around 10:00 PM …". A time inside a sentence ("10:30 AM; drop bags") doesn't count.
+const ENTRY_TIME = /^(?:\d{1,2}(?::\d{2})?\s*(?:AM|PM)?\s*[–—-]\s*(?:\d|about\b)|\d{1,2}(?::\d{2})?\s*(?:AM|PM)\s+[A-Z]|\d{1,2}:\d{2}\s+(?!AM\b|PM\b)[A-Z])/i;
+const ENTRY_WORD = /^(?:Morning|Afternoon|Evening|Night|All day|Around \d)\b/;
+const ENTRY = { test: (line: string) => ENTRY_TIME.test(line) || ENTRY_WORD.test(line) };
+const TIME_ONLY = /^[\d:\s]*(?:AM|PM)?\s*[–—-]\s*(?:about)?$/i;
+
+/** Joins a PDF's wrapped lines back into entries (one per time slot), dropping running headers and footers. */
+export function tidyDayText(raw: string) {
+  let lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  // The section starts with its own "Day N · …" heading (sometimes wrapped over a few lines), which the board shows.
+  const first = lines.findIndex((l, i) => i > 0 && ENTRY.test(l));
+  if (first > 0 && first <= 6) lines = lines.slice(first);
+  else if (lines.length > 1) lines.shift();
+  else if (lines[0]) lines[0] = lines[0].replace(/^Day[\s\-–—]*\w+\s*[·•:|\-–—.,]?\s*/i, "");
+  // A short title-like line at the very end is the next section's subtitle ("Hanoi and the highlands").
+  // (Title-like: capitalised words, no figures or punctuation. A wrapped "hrs" or "mins" is not one.)
+  while (lines.length > 1 && lines.at(-1)!.length < 50 && /^[A-Z][^\d.,;:!?()]*\s[^\d.,;:!?()]+$/.test(lines.at(-1)!)) lines.pop();
+  const entries: string[] = [];
+  for (const line of lines) {
+    const letters = line.replace(/[^A-Za-z]/g, "");
+    // Running headers like "VIETNAM · 12–25 DECEMBER 2026" or letter-spaced "T H E I T I N E R A R Y".
+    if ((letters.length >= 8 && letters === letters.toUpperCase()) || /^(?:\S\s){5,}/.test(line)) continue;
+    const last = entries.at(-1);
+    // "Morning …" only starts an entry once the previous one is finished ("… 1.5 hrs"), not mid-description.
+    const starts = ENTRY_TIME.test(line) || (ENTRY_WORD.test(line) && !!last && /(?:\bhrs?|\bmins?|\.)$/i.test(last));
+    if (!last || (starts && !TIME_ONLY.test(last))) entries.push(line);
+    else entries[entries.length - 1] = /[-–]$/.test(last) && /^[a-z]/.test(line) ? last + line : `${last} ${line}`;
+  }
+  return entries.join("\n").trim() || null;
+}
+
+/**
+ * What the PDF says for each day: the text from that day's heading to the next day's, tidied (see tidyDayText).
+ * Uses the pages findDayPages chose. Null for days without a heading. Capped, ending on a whole entry.
+ */
+export function findDayTexts(pageTexts: string[], dayPages: (number | null)[], maxChars = 1500): (string | null)[] {
+  const offsets: number[] = [];
+  let full = "";
+  for (const text of pageTexts) {
+    offsets.push(full.length);
+    full += `${text}\n`;
+  }
+  const starts = dayPages.map((page, i) => {
+    if (!page) return null;
+    const text = pageTexts[page - 1] ?? "";
+    const at = headings(i + 1)
+      .map((re) => {
+        const m = re.exec(text);
+        return m ? m.index + (m[0].length - m[0].trimStart().length) : -1;
+      })
+      .filter((x) => x >= 0);
+    return at.length ? offsets[page - 1]! + Math.min(...at) : null;
+  });
+  return starts.map((start, i) => {
+    if (start == null) return null;
+    const next = starts.slice(i + 1).find((x): x is number => x != null && x > start);
+    // The last day found runs to the end of its page.
+    const end = next ?? offsets[dayPages[i]!] ?? full.length;
+    const tidy = tidyDayText(full.slice(start, end));
+    if (!tidy || tidy.length <= maxChars) return tidy;
+    const cut = tidy.slice(0, maxChars);
+    return (cut.includes("\n") ? cut.slice(0, cut.lastIndexOf("\n")) : cut).trim() + " …";
+  });
+}
+
 /** The page to open for a day: its own, or the nearest earlier day that was found (else page 1). */
 export function pageForDay(dayPages: (number | null)[], dayIndex: number) {
   for (let i = Math.min(dayIndex, dayPages.length - 1); i >= 0; i--) if (dayPages[i]) return { page: dayPages[i]!, exact: i === dayIndex };

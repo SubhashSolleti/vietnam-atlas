@@ -605,6 +605,8 @@ export const tripDocuments = pgTable(
     pageCount: integer("page_count").notNull(),
     /** Page each trip day starts on (index 0 = day 1), found from "Day N" headings; null where not found. */
     dayPages: json<(number | null)[]>("day_pages").notNull().default(sql`'[]'::jsonb`),
+    /** What the PDF says for each trip day (its section's text, tidied), shown on the board; null where not found. */
+    dayTexts: json<(string | null)[]>("day_texts").notNull().default(sql`'[]'::jsonb`),
     data: bytea("data").notNull(),
     uploadedBy: text("uploaded_by").references(() => tripMembers.id, { onDelete: "set null" }),
     createdAt: createdAt(),
@@ -739,6 +741,11 @@ export const itineraryItems = pgTable(
     costMode: text("cost_mode", { enum: ["per_person", "total"] }).notNull().default("per_person"),
     participants: json<string[] | null>("participants"),
     notes: text("notes"),
+    /**
+     * "plan": part of the group plan, everyone goes unless they opt out. "picks": added by the personal-plans
+     * builder for the people who picked it (an extra, or a base activity some moved to another day): opt-in.
+     */
+    source: text("source", { enum: ["plan", "picks"] }).notNull().default("plan"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

@@ -101,6 +101,27 @@ describe("buildPersonalPlans", () => {
     expect(dayCapacity({ isFirst: false, isLast: false }, [{ type: "transport", startTime: "10:35" }])).toBe(720);
   });
 
+  it("moves a base activity to another day for the people who moved it on their board", () => {
+    const home = { ...item("v", "d1", "vinwonders", 420), startTime: "09:30", title: "VinWonders" };
+    const changes = buildPersonalPlans({ members, days, items: [home], picks: [pick("vinwonders", [{ memberId: "a", vote: "interested", dayId: "d2" }, { memberId: "b", vote: "must_do", dayId: "d2" }])] });
+    expect(changes.updates).toEqual([{ itemId: "v", participants: ["subhash", "c", "d", "e", "f"], going: 5 }]);
+    expect(changes.additions).toEqual([{ activityId: "vinwonders", dayId: "d2", date: "2026-12-13", title: "VinWonders", durationMin: 420, participants: ["a", "b"], startTime: "09:30", movedFrom: "d1" }]);
+  });
+
+  it("keeps a moved copy stable on the next run, and brings people back when they move it home", () => {
+    const home = { ...item("v", "d1", "vinwonders", 420, ["subhash", "c", "d", "e", "f"]), title: "VinWonders" };
+    const copy = { ...item("v2", "d2", "vinwonders", 420, ["a", "b"]), optIn: true };
+    const same = buildPersonalPlans({ members, days, items: [home, copy], picks: [pick("vinwonders", [{ memberId: "a", vote: "interested", dayId: "d2" }, { memberId: "b", vote: "must_do", dayId: "d2" }])] });
+    expect(same.updates).toEqual([]);
+    expect(same.additions).toEqual([]);
+    // b moves it back to the group's day (keeping the star, no day); a is the only one left on Day 2.
+    const back = buildPersonalPlans({ members, days, items: [home, copy], picks: [pick("vinwonders", [{ memberId: "a", vote: "interested", dayId: "d2" }, { memberId: "b", vote: "must_do", dayId: null }])] });
+    expect(back.updates).toEqual([
+      { itemId: "v", participants: ["subhash", "b", "c", "d", "e", "f"], going: 6 },
+      { itemId: "v2", participants: ["a"], going: 1 },
+    ]);
+  });
+
   it("doesn't add an activity twice", () => {
     const changes = buildPersonalPlans({ members, days, items: [item("i1", "d1", "x")], picks: [pick("x", [{ memberId: "a", vote: "must_do" }])] });
     expect(changes.additions).toEqual([]);

@@ -70,7 +70,7 @@ export async function ensureItineraryDays(trip: Pick<Trip, "id" | "startDate" | 
 /** The trip's base-plan PDF details (never the file itself), or null. */
 export async function basePlanDocument(tripId: string) {
   const doc = await db
-    .select({ fileName: t.tripDocuments.fileName, sizeBytes: t.tripDocuments.sizeBytes, pageCount: t.tripDocuments.pageCount, dayPages: t.tripDocuments.dayPages, createdAt: t.tripDocuments.createdAt, uploadedBy: t.tripDocuments.uploadedBy })
+    .select({ fileName: t.tripDocuments.fileName, sizeBytes: t.tripDocuments.sizeBytes, pageCount: t.tripDocuments.pageCount, dayPages: t.tripDocuments.dayPages, dayTexts: t.tripDocuments.dayTexts, createdAt: t.tripDocuments.createdAt, uploadedBy: t.tripDocuments.uploadedBy })
     .from(t.tripDocuments)
     .where(and(eq(t.tripDocuments.tripId, tripId), eq(t.tripDocuments.kind, "base_plan")))
     .get();
