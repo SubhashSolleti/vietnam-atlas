@@ -29,6 +29,8 @@ export function BudgetWorkspace(p: {
   result: BudgetResult;
   fx: FxRates;
   members: { id: string; name: string; color: string }[];
+  /** People the costs are shared between: members plus anyone expected who hasn't joined yet. */
+  travellers: number;
   categories: Cat[];
   expenses: Expense[];
   destinations: { id: string; name: string }[];
@@ -85,7 +87,7 @@ export function BudgetWorkspace(p: {
       {/* KPIs */}
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4" aria-label="Budget summary">
         <Kpi label="Per person (average)" value={both(r.averagePerPersonVnd)} sub={target ? `Target ${inr(target)}${p.rangeInr[0] && p.rangeInr[1] ? ` · range ₹${p.rangeInr[0].toLocaleString("en-IN")}–₹${p.rangeInr[1].toLocaleString("en-IN")}` : ""}` : "No target set"} />
-        <Kpi label="Group total" value={both(r.groupTotalVnd)} sub={`${p.members.length} travellers · ${r.days} days`} />
+        <Kpi label="Group total" value={both(r.groupTotalVnd)} sub={`${p.travellers} travellers${p.travellers > p.members.length ? ` (${p.members.length} joined)` : ""} · ${r.days} days`} />
         <Kpi
           label="Remaining (tightest traveller)"
           value={r.remainingPerMember ? <span className={cn(Math.min(...Object.values(r.remainingPerMember)) < 0 && "text-bad")}>{both(Math.min(...Object.values(r.remainingPerMember)))}</span> : "-"}
@@ -119,7 +121,7 @@ export function BudgetWorkspace(p: {
                   <td className="px-4 py-2.5 font-medium">{catName(c.slug)}</td>
                   <td className="px-4 py-2.5 tabular-nums">{inr(c.totalVnd)}</td>
                   <td className="px-4 py-2.5 text-muted tabular-nums">{formatVnd(c.totalVnd)}</td>
-                  <td className="px-4 py-2.5 tabular-nums">{inr(c.totalVnd / Math.max(1, p.members.length))}</td>
+                  <td className="px-4 py-2.5 tabular-nums">{inr(c.totalVnd / Math.max(1, p.travellers))}</td>
                   <td className="px-4 py-2.5">{c.quotedVnd > 0 && c.estimatedVnd > 0 ? <Badge tone="neutral">Mixed</Badge> : c.quotedVnd > 0 ? <Badge tone="good">Quoted</Badge> : <Badge tone="warn">Estimate</Badge>}</td>
                 </tr>
               ))}
@@ -223,7 +225,7 @@ export function BudgetWorkspace(p: {
         <ul className="divide-y divide-line text-sm">
           {r.lines.map((l) => (
             <li key={l.id} className="flex flex-wrap items-center gap-3 px-4 py-2">
-              <span className="min-w-0 flex-1">{l.label} <span className="text-xs text-muted">· {catName(l.category)} · {l.participantIds.length === p.members.length ? "everyone" : `${l.participantIds.length} people`}</span></span>
+              <span className="min-w-0 flex-1">{l.label} <span className="text-xs text-muted">· {catName(l.category)} · {l.participantIds.length >= p.travellers ? "everyone" : `${l.participantIds.length} people`}</span></span>
               <Badge tone={l.isQuote ? "good" : "warn"}>{l.isQuote ? "Quote" : "Estimate"}</Badge>
               <span className="w-36 text-right tabular-nums">{inr(l.groupTotalVnd)}</span>
               <span className="w-32 text-right text-xs text-muted tabular-nums">{inr(l.perParticipantVnd)} each</span>

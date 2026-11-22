@@ -1,0 +1,63 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { and, eq } from "drizzle-orm";
+import { z } from "zod";
+import { db, t } from "@/db/client";
+import { run, UserError } from "@/lib/action";
+import { requireUser } from "@/lib/auth";
+import { findDayPages, isPdf, MAX_PLAN_PDF_BYTES } from "@/lib/pdf-days";
+import { daysBetween } from "@/lib/utils";
+import { assertMember } from "@/services/trips";
+
+/** Reads the text of every page, for finding where each day starts. A PDF without text (a scan) gives empty pages. */
+async function pageTexts(bytes: Uint8Array) {
+  const { extractText, getDocumentProxy } = await import("unpdf");
+  try {
+    const pdf = await getDocumentProxy(new Uint8Array(bytes));
+    const { totalPages, text } = await extractText(pdf, { mergePages: false });
+    return { totalPages, text };
+  } catch {
+    throw new UserError("That PDF couldn't be read. Try exporting it again, or saving it with Print → Save as PDF.");
+  }
+}
+
+/**
+ * Attaches the owner's itinerary PDF to the trip as its base plan (replacing any earlier one). Everyone in the trip
+ * can then open it, and each day of the board links to the page where that day starts.
+ */
+export async function uploadBasePlanPdf(form: FormData) {
+  return run(async () => {
+    const tripId = z.string().uuid().parse(form.get("tripId"));
+    const user = await requireUser();
+    const { trip, member } = await assertMember(tripId, user.id, ["owner", "editor"]);
+    const file = form.get("file");
+    if (!(file instanceof File) || file.size === 0) throw new UserError("Choose your itinerary PDF.");
+    if (file.size > MAX_PLAN_PDF_BYTES) throw new UserError("PDFs must be 4 MB or smaller. Try exporting it with smaller images.");
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (!isPdf(bytes)) throw new UserError("That file isn't a PDF.");
+    const { totalPages, text } = await pageTexts(bytes);
+    const dayPages = findDayPages(text, daysBetween(trip.startDate, trip.endDate) + 1);
+    const fileName = (file.name || "itinerary.pdf").replace(/[^\p{L}\p{N} ._()-]/gu, "").slice(0, 120) || "itinerary.pdf";
+    const row = { fileName, contentType: "application/pdf", sizeBytes: bytes.byteLength, pageCount: totalPages, dayPages, data: Buffer.from(bytes), uploadedBy: member.id, createdAt: new Date().toISOString() };
+    await db
+      .insert(t.tripDocuments)
+      .values({ tripId, kind: "base_plan", ...row })
+      .onConflictDoUpdate({ target: [t.tripDocuments.tripId, t.tripDocuments.kind], set: row })
+      .run();
+    await db.update(t.trips).set({ updatedAt: new Date().toISOString() }).where(eq(t.trips.id, tripId)).run();
+    revalidatePath("/", "layout");
+    return { pageCount: totalPages, daysFound: dayPages.filter((p) => p != null).length };
+  });
+}
+
+export async function removeBasePlanPdf(tripId: string) {
+  return run(async () => {
+    const user = await requireUser();
+    await assertMember(z.string().uuid().parse(tripId), user.id, ["owner", "editor"]);
+    await db.delete(t.tripDocuments).where(and(eq(t.tripDocuments.tripId, tripId), eq(t.tripDocuments.kind, "base_plan"))).run();
+    await db.update(t.trips).set({ updatedAt: new Date().toISOString() }).where(eq(t.trips.id, tripId)).run();
+    revalidatePath("/", "layout");
+    return {};
+  });
+}

@@ -38,12 +38,40 @@ describe("buildPersonalPlans", () => {
     expect(changes.additions).toEqual([{ activityId: "sea-walking", dayId: "d2", date: "2026-12-13", title: "sea-walking", durationMin: 60, participants: ["b", "c"] }]);
   });
 
+  it("puts an extra pick on the day most of its fans dropped it on, if that day has room", () => {
+    const votes = [
+      { memberId: "a", vote: "interested" as const, dayId: "d1" },
+      { memberId: "b", vote: "must_do" as const, dayId: "d1" },
+      { memberId: "c", vote: "interested" as const, dayId: "d2" },
+    ];
+    // d1 is busier, but two of the three fans chose it.
+    const placed = buildPersonalPlans({ members, days, items: [item("i1", "d1", "vinwonders", 240)], picks: [pick("sea-walking", votes)] });
+    expect(placed.additions[0]).toMatchObject({ dayId: "d1", participants: ["a", "b", "c"] });
+    // A chosen day that's already full gives way to the next best day.
+    const full = buildPersonalPlans({ members, days, items: [item("i1", "d1", "vinwonders", 700)], picks: [pick("sea-walking", votes)] });
+    expect(full.additions[0]).toMatchObject({ dayId: "d2" });
+    // A day chosen at another place doesn't count.
+    const elsewhere = buildPersonalPlans({ members, days, items: [], picks: [pick("sea-walking", [{ memberId: "a", vote: "interested", dayId: "d3" }])] });
+    expect(elsewhere.additions[0]).toMatchObject({ dayId: "d1" });
+  });
+
+  it("counts only the fans' own day when checking room: skipping a long activity frees the day", () => {
+    const changes = buildPersonalPlans({
+      members,
+      days,
+      items: [item("i1", "d1", "vinwonders", 700)],
+      picks: [pick("vinwonders", [{ memberId: "a", vote: "done_before" }]), pick("parasailing", [{ memberId: "a", vote: "interested", dayId: "d1" }])],
+    });
+    expect(changes.additions[0]).toMatchObject({ activityId: "parasailing", dayId: "d1", participants: ["a"] });
+  });
+
   it("reports picks it can't place and items nobody is doing", () => {
     const everyoneDone = members.map((m) => ({ memberId: m.id, vote: "done_before" as const }));
     const changes = buildPersonalPlans({
       members,
       days: days.slice(0, 1),
-      items: [item("i1", "d1", "full-day", 700)],
+      // Nobody does i1 any more, but everyone is still on the 10-hour i2, so their day has no room for 2 more hours.
+      items: [item("i1", "d1", "full-day", 700), item("i2", "d1", "long-tour", 650)],
       picks: [pick("full-day", everyoneDone), pick("too-long", [{ memberId: "a", vote: "must_do" }], ["pq"], 120), pick("elsewhere", [{ memberId: "a", vote: "interested" }], ["hanoi"]), pick("no-fans", [{ memberId: "a", vote: "not_interested" }])],
     });
     expect(changes.nobodyGoing).toEqual(["i1"]);

@@ -15,6 +15,13 @@
       "when": 1794560117467,
       "tag": "0001_lock_down_data_api",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795372935899,
+      "tag": "0002_base_plan_documents",
+      "breakpoints": true
     }
   ]
 }

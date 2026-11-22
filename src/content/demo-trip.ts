@@ -21,15 +21,8 @@ export const demoTrip = {
   currency: "INR",
   scenario: "balanced" as const,
   inviteCode: "COUSINS26",
-  members: [
-    { displayName: "Subhash", role: "owner" as const, travellerType: "couple" as const, coupleGroup: "A", avatarColor: "#173F35" },
-    { displayName: "Traveller 2", role: "editor" as const, travellerType: "couple" as const, coupleGroup: "A", avatarColor: "#377A61" },
-    { displayName: "Traveller 3", role: "member" as const, travellerType: "couple" as const, coupleGroup: "B", avatarColor: "#C96F50" },
-    { displayName: "Traveller 4", role: "member" as const, travellerType: "couple" as const, coupleGroup: "B", avatarColor: "#D6AB59" },
-    { displayName: "Traveller 5", role: "member" as const, travellerType: "solo" as const, avatarColor: "#5B6F8F" },
-    { displayName: "Traveller 6", role: "member" as const, travellerType: "solo" as const, avatarColor: "#8A5A83" },
-    { displayName: "Traveller 7", role: "member" as const, travellerType: "solo" as const, avatarColor: "#6E7B3A" },
-  ],
+  // Only the owner to start: the other six join from the invite link with their names, in any order.
+  owner: { displayName: "Subhash", travellerType: "couple" as const, coupleGroup: "A", avatarColor: "#173F35" },
   settings: {
     insurancePerPersonVnd: 650_000,
     simPerPersonVnd: 250_000,

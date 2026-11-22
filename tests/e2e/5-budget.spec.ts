@@ -14,6 +14,12 @@ test("Scenario 5: budget: target, stay, domestic travel, paid + optional experie
   await page.getByLabel("Travellers").fill("7");
   await page.getByRole("button", { name: "Create trip" }).click();
   await expect(page).toHaveURL(/tab=members/);
+  // The other six are added by name (as for people who won't join online), so costs can name who takes part.
+  for (const name of ["Ravi", "Meena", "Kiran", "Asha", "Dev", "Nisha"]) {
+    await page.getByPlaceholder(/Add someone who won't join online/).fill(name);
+    await page.getByRole("button", { name: "Add", exact: true }).click();
+    await expect(page.getByRole("listitem").filter({ hasText: name })).toBeVisible();
+  }
 
   await page.goto("/trip/budget");
   // Make the maths exact: no daily estimates, no insurance/SIM/reserve.

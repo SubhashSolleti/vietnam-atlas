@@ -4,7 +4,8 @@
  *  - Base-plan activities: everyone is in unless they voted Skip ("not interested"), "Can't participate" or
  *    "Already done". Nobody has to vote on everything: no vote means you're going.
  *  - Extra picks (on the shortlist but not in the itinerary): added for the people who said "Must do" or "I'm in",
- *    on the least busy day at that destination. Picks with no fans, or with no matching day, are reported, not placed.
+ *    on the day most of them dropped it on (their board), or else their least busy day at that destination. Picks with
+ *    no fans, or with no matching day, are reported, not placed.
  *
  * The result is a list of changes; the caller decides whether to write them.
  */
@@ -32,7 +33,8 @@ export interface PlanPick {
   /** The activity's destination and its parent region destination (e.g. Ben Tre → Mekong Delta). */
   destinationIds: string[];
   durationMin: number;
-  votes: { memberId: string; vote: Vote }[];
+  /** dayId: the day this person dropped the pick on, if any. */
+  votes: { memberId: string; vote: Vote; dayId?: string | null }[];
 }
 
 export interface PlanChanges {
@@ -66,6 +68,9 @@ export function buildPersonalPlans(input: { members: PlanMember[]; days: PlanDay
   const votesFor = new Map(picks.map((p) => [p.activityId, new Map(p.votes.map((v) => [v.memberId, v.vote]))]));
   const changes: PlanChanges = { updates: [], additions: [], unplaced: [], nobodyGoing: [] };
 
+  // Who is doing each item after this run (null = everyone), for working out how busy each person's day is.
+  const partyOf = new Map<string, string[] | null>(items.map((i) => [i.id, i.participants]));
+
   // 1. Activities already in the itinerary: everyone except those sitting it out.
   for (const item of items) {
     if (item.type !== "activity" || !item.activityId) continue;
@@ -76,13 +81,20 @@ export function buildPersonalPlans(input: { members: PlanMember[]; days: PlanDay
     });
     if (!going.length) changes.nobodyGoing.push(item.id);
     const participants = asParticipants(going.map((m) => m.id), members);
+    partyOf.set(item.id, participants);
     if (!sameParticipants(participants, item.participants)) changes.updates.push({ itemId: item.id, participants, going: going.length });
   }
 
   // 2. Extra picks: placed on the least busy matching day, for the people who want them.
   const scheduled = new Set(items.filter((i) => i.activityId).map((i) => i.activityId!));
-  const load = new Map(days.map((d) => [d.id, 0]));
-  for (const i of items) if (i.type !== "note" && i.type !== "accommodation") load.set(i.dayId, (load.get(i.dayId) ?? 0) + (i.durationMin ?? 0));
+  // Minutes each person is busy each day. An extra only needs room in its fans' days: skipping VinWonders frees yours.
+  const busy = new Map<string, Map<string, number>>(days.map((d) => [d.id, new Map()]));
+  const addBusy = (dayId: string, who: string[], minutes: number) => {
+    const day = busy.get(dayId);
+    if (day) for (const id of who) day.set(id, (day.get(id) ?? 0) + minutes);
+  };
+  for (const i of items) if (i.type !== "note" && i.type !== "accommodation") addBusy(i.dayId, partyOf.get(i.id) ?? members.map((m) => m.id), i.durationMin ?? 0);
+  const loadFor = (dayId: string, who: string[]) => Math.max(0, ...who.map((id) => busy.get(dayId)?.get(id) ?? 0));
   const memberIds = new Set(members.map((m) => m.id));
   const wanted = picks
     .filter((p) => !scheduled.has(p.activityId))
@@ -96,14 +108,18 @@ export function buildPersonalPlans(input: { members: PlanMember[]; days: PlanDay
       changes.unplaced.push({ activityId: p.activityId, title: p.title, reason: "no_day" });
       continue;
     }
+    // Fans' chosen days first (most chosen wins), then the least busy, then the earliest.
+    const chosen = new Map<string, number>();
+    for (const f of fans) if (f.dayId) chosen.set(f.dayId, (chosen.get(f.dayId) ?? 0) + 1);
+    const fanIds = fans.map((f) => f.memberId);
     const day = options
-      .filter((d) => (load.get(d.id) ?? 0) + p.durationMin <= DAY_CAPACITY_MIN)
-      .sort((a, b) => (load.get(a.id) ?? 0) - (load.get(b.id) ?? 0) || a.date.localeCompare(b.date))[0];
+      .filter((d) => loadFor(d.id, fanIds) + p.durationMin <= DAY_CAPACITY_MIN)
+      .sort((a, b) => (chosen.get(b.id) ?? 0) - (chosen.get(a.id) ?? 0) || loadFor(a.id, fanIds) - loadFor(b.id, fanIds) || a.date.localeCompare(b.date))[0];
     if (!day) {
       changes.unplaced.push({ activityId: p.activityId, title: p.title, reason: "day_full" });
       continue;
     }
-    load.set(day.id, (load.get(day.id) ?? 0) + p.durationMin);
+    addBusy(day.id, fanIds, p.durationMin);
     changes.additions.push({
       activityId: p.activityId,
       dayId: day.id,

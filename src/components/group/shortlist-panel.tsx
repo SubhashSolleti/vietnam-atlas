@@ -45,7 +45,7 @@ const STATUS: Record<string, { label: string; tone: Tone }> = {
   completed: { label: "Completed", tone: "accent" },
 };
 
-export function ShortlistPanel({ tripId, myMemberId, canManage, votePrivacy, members, candidates }: { tripId: string; myMemberId: string; canManage: boolean; votePrivacy: "named" | "anonymous"; members: Member[]; candidates: Candidate[] }) {
+export function ShortlistPanel({ tripId, myMemberId, canManage, votePrivacy, members, groupSize, candidates }: { tripId: string; myMemberId: string; canManage: boolean; votePrivacy: "named" | "anonymous"; members: Member[]; groupSize: number; candidates: Candidate[] }) {
   const [filter, setFilter] = useState<"all" | "unvoted" | "discussion" | "approved" | "rejected">("all");
   const [sort, setSort] = useState<"score" | "recent" | "price">("score");
   const items = useMemo(() => {
@@ -92,14 +92,14 @@ export function ShortlistPanel({ tripId, myMemberId, canManage, votePrivacy, mem
       </div>
       <ul className="space-y-4">
         {items.map((c) => (
-          <CandidateCard key={c.id} c={c} tripId={tripId} myMemberId={myMemberId} canManage={canManage} votePrivacy={votePrivacy} members={members} />
+          <CandidateCard key={c.id} c={c} tripId={tripId} myMemberId={myMemberId} canManage={canManage} votePrivacy={votePrivacy} members={members} groupSize={groupSize} />
         ))}
       </ul>
     </div>
   );
 }
 
-function CandidateCard({ c, myMemberId, canManage, votePrivacy, members }: { c: Candidate; tripId: string; myMemberId: string; canManage: boolean; votePrivacy: "named" | "anonymous"; members: Member[] }) {
+function CandidateCard({ c, myMemberId, canManage, votePrivacy, members, groupSize }: { c: Candidate; tripId: string; myMemberId: string; canManage: boolean; votePrivacy: "named" | "anonymous"; members: Member[]; groupSize: number }) {
   const toast = useToast();
   const confirm = useConfirm();
   const fx = useFx();
@@ -111,7 +111,8 @@ function CandidateCard({ c, myMemberId, canManage, votePrivacy, members }: { c: 
   const my = c.votes.find((v) => v.memberId === myMemberId)?.vote as Vote | undefined;
   const byMember = new Map(members.map((m) => [m.id, m]));
   const a = c.analysis;
-  const total = members.length;
+  // Out of everyone expected on the trip, including people who haven't joined yet.
+  const total = Math.max(groupSize, members.length);
   const status = STATUS[c.status] ?? STATUS.discussion!;
   const run = (fn: () => Promise<{ ok: boolean; error?: string }>, ok?: string) =>
     start(async () => {

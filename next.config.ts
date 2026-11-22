@@ -38,6 +38,15 @@ const nextConfig: NextConfig = {
     return [
       { source: "/:path*", headers: securityHeaders },
       {
+        // The trip's PDF opened directly: browsers show it with their built-in viewer, which a page policy of
+        // object-src 'none' can block. A PDF needs no scripts, styles or connections, so everything else stays shut.
+        source: "/api/trips/:id/base-plan",
+        headers: [
+          { key: "Content-Security-Policy", value: "default-src 'none'; object-src 'self'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'" },
+          { key: "X-Frame-Options", value: "SAMEORIGIN" },
+        ],
+      },
+      {
         // Curated photos: new files get content-hashed names and existing ones are never rewritten.
         source: "/media/:path*",
         headers: [{ key: "Cache-Control", value: "public, max-age=31536000, immutable" }],

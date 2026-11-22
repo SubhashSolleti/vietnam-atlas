@@ -6,7 +6,7 @@ import { eq } from "drizzle-orm";
 import { db, t } from "@/db/client";
 import { getCurrentUser } from "@/lib/auth";
 import { cn, daysBetween, formatLongDate } from "@/lib/utils";
-import { assertMember, consensusFor, itineraryData, tripBudget, tripWorkspace, TripAccessError } from "@/services/trips";
+import { assertMember, basePlanDocument, consensusFor, itineraryData, tripBudget, tripWorkspace, TripAccessError } from "@/services/trips";
 import { getCatalog } from "@/services/catalog";
 import { Avatar } from "@/components/ui/avatar";
 import { LiveRefresh } from "@/components/group/live-refresh";
@@ -14,6 +14,7 @@ import { MembersPanel } from "@/components/group/members-panel";
 import { PreferencesPanel } from "@/components/group/preferences-panel";
 import { ShortlistPanel } from "@/components/group/shortlist-panel";
 import { PicksPanel, type PickDay, type PickExtra } from "@/components/group/picks-panel";
+import { BasePlanPdf } from "@/components/group/base-plan-pdf";
 import { ConsensusPanel } from "@/components/group/consensus-panel";
 import { GroupBudgetPanel } from "@/components/group/group-budget-panel";
 import { TripSwitcher } from "@/components/group/trip-switcher";
@@ -28,7 +29,7 @@ export async function generateMetadata({ searchParams }: { searchParams: Promise
 
 const TABS = [
   ["overview", "Overview"],
-  ["plan", "Day by day picks"],
+  ["plan", "Board & picks"],
   ["members", "Members & invites"],
   ["preferences", "Preferences"],
   ["shortlist", "Shortlist & votes"],
@@ -56,7 +57,7 @@ export default async function GroupWorkspace({ params, searchParams }: { params:
   const remaining = budget.remainingPerMember ? Math.min(...Object.values(budget.remainingPerMember)) : null;
   const consensus = consensusFor(trip, ws, remaining);
   // Anonymous voting: individual votes never leave the server, only tallies, your own vote, and (for owners/editors)
-  // the proxy votes they recorded for seats nobody has claimed yet.
+  // the picks they recorded for travellers who haven't joined online.
   const anonymous = trip.votePrivacy === "anonymous";
   const unclaimed = new Set(ws.members.filter((m) => !m.userId).map((m) => m.id));
   const visibleVotes = <V extends { memberId: string; vote: string }>(votes: V[]) =>
@@ -71,6 +72,8 @@ export default async function GroupWorkspace({ params, searchParams }: { params:
   const catalog = await getCatalog();
   const picks = tab === "plan" ? await picksData(trip.id, ws, catalog) : null;
   const ownerName = ws.members.find((m) => m.role === "owner")?.displayName ?? "The trip owner";
+  const pdf = tab === "plan" || tab === "overview" ? await basePlanDocument(trip.id) : null;
+  const expected = Math.max(trip.travellersCount, ws.members.length);
   const allTrips = await db.select({ id: t.trips.id, name: t.trips.name }).from(t.tripMembers).innerJoin(t.trips, eq(t.trips.id, t.tripMembers.tripId)).where(eq(t.tripMembers.userId, user.id)).all();
 
   return (
@@ -96,7 +99,7 @@ export default async function GroupWorkspace({ params, searchParams }: { params:
               </span>
             ))}
           </div>
-          <span className="text-sm text-muted">{joined}/{ws.members.length} joined</span>
+          <span className="text-sm text-muted">{joined}/{expected} joined</span>
         </div>
       </div>
 
@@ -123,12 +126,13 @@ export default async function GroupWorkspace({ params, searchParams }: { params:
           <div className="grid gap-6 lg:grid-cols-3">
             <div className="flex flex-col gap-3 rounded-md border border-brand/30 bg-surface-2 p-5 sm:flex-row sm:items-center sm:justify-between lg:col-span-3">
               <div>
-                <h2 className="font-sans text-base font-semibold">Pick your activities</h2>
-                <p className="mt-1 text-sm text-muted">Go through {ownerName}'s plan day by day: mark what you'd skip or have already done, and add anything else you want to do.</p>
+                <h2 className="font-sans text-base font-semibold">Make your own version of the trip</h2>
+                <p className="mt-1 text-sm text-muted">Your board starts as {ownerName}'s plan, day by day. Drag out what you'd skip or have already done, and drag in anything else you want to do.</p>
               </div>
-              <Link href={`/group/${trip.id}?tab=plan`} className="shrink-0 font-semibold text-accent hover:underline">Open day by day picks →</Link>
+              <Link href={`/group/${trip.id}?tab=plan`} className="shrink-0 font-semibold text-accent hover:underline">Open your board →</Link>
             </div>
-            <OverviewCard title="Travellers joined" value={`${joined} of ${ws.members.length}`} href={`/group/${trip.id}?tab=members`} cta="Invite & manage" />
+            {(pdf || canManage) && <div className="lg:col-span-3"><BasePlanPdf tripId={trip.id} pdf={pdf} ownerName={ownerName} canManage={canManage} /></div>}
+            <OverviewCard title="Travellers joined" value={`${joined} of ${expected}`} href={`/group/${trip.id}?tab=members`} cta="Invite & manage" />
             <OverviewCard title="Preferences shared" value={`${prefsDone} of ${ws.members.length}`} href={`/group/${trip.id}?tab=preferences`} cta="Set your preferences" />
             <OverviewCard title="Shortlisted experiences" value={String(ws.candidates.length)} href={`/group/${trip.id}?tab=shortlist`} cta="Vote now" />
             <div className="rounded-md border border-line bg-surface p-5 lg:col-span-2">
@@ -176,9 +180,11 @@ export default async function GroupWorkspace({ params, searchParams }: { params:
             canManage={canManage}
             anonymous={anonymous}
             members={ws.members.map((m) => ({ id: m.id, name: m.displayName, color: m.avatarColor, joined: !!m.userId }))}
+            expectedTravellers={expected}
             days={picks.days}
             extras={picks.extras}
-            votes={Object.fromEntries(ws.candidates.map((c) => [c.id, visibleVotes(c.votes).map((v) => ({ memberId: v.memberId, vote: v.vote }))]))}
+            pdf={pdf}
+            votes={Object.fromEntries(ws.candidates.filter((c) => c.status !== "rejected").map((c) => [c.activityId, visibleVotes(c.votes).map((v) => ({ memberId: v.memberId, vote: v.vote, dayId: v.dayId }))]))}
           />
         )}
         {tab === "members" && (
@@ -206,6 +212,7 @@ export default async function GroupWorkspace({ params, searchParams }: { params:
             canManage={canManage}
             votePrivacy={trip.votePrivacy}
             members={ws.members.map((m) => ({ id: m.id, name: m.displayName, color: m.avatarColor, joined: !!m.userId, travellerType: m.travellerType }))}
+            groupSize={expected}
             candidates={ws.candidates.map((c) => ({
               id: c.id,
               status: c.status,
@@ -227,7 +234,7 @@ export default async function GroupWorkspace({ params, searchParams }: { params:
             canManage={canManage}
             items={ws.candidates.map((c) => ({ id: c.id, title: c.card?.title ?? "Activity", slug: c.card?.slug ?? "", destination: c.card?.destinationName ?? "", status: c.status, perPersonVnd: c.perPersonVnd, analysis: analysisFor(c.id) }))}
             suggestedIds={consensus.suggested.map((s) => s.id)}
-            memberCount={ws.members.length}
+            memberCount={expected}
           />
         )}
         {tab === "budget" && (
@@ -287,7 +294,6 @@ async function picksData(tripId: string, ws: Awaited<ReturnType<typeof tripWorks
         notes: i.notes,
         activityId: i.activityId,
         slug: i.activityId ? (actById.get(i.activityId)?.slug ?? null) : null,
-        candidateId: i.type === "activity" && i.activityId ? (candidateOf.get(i.activityId) ?? null) : null,
         participants: i.participants,
       }))
       .sort((a, b) => (a.time ?? "99").localeCompare(b.time ?? "99")),
@@ -309,11 +315,11 @@ async function picksData(tripId: string, ws: Awaited<ReturnType<typeof tripWorks
       durationMin: Math.round(a.durationHours * 60),
       tier: a.priceTier,
       price: a.price,
-      candidateId: candidateOf.get(a.id) ?? null,
+      onShortlist: candidateOf.has(a.id),
       destinationId: placeOf(a.destinationId)!,
       featured: a.featured,
     }))
-    .sort((a, b) => Number(!!b.candidateId) - Number(!!a.candidateId) || Number(b.featured) - Number(a.featured) || a.title.localeCompare(b.title))
-    .map(({ featured: _featured, ...e }) => e);
+    .sort((a, b) => Number(b.onShortlist) - Number(a.onShortlist) || Number(b.featured) - Number(a.featured) || a.title.localeCompare(b.title))
+    .map(({ featured: _featured, onShortlist: _onShortlist, ...e }) => e);
   return { days: pickDays, extras };
 }

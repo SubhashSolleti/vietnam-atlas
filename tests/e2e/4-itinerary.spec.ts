@@ -3,10 +3,9 @@ import { watchErrors } from "./helpers";
 
 test("Scenario 4: itinerary: route, activities, overnight transport, reorder, budget, conflicts", async ({ page }) => {
   const w = watchErrors(page);
-  // Join the seeded demo trip on the editor seat (the owner seat is Subhash's)
+  // Join the seeded demo trip with just a name (Subhash owns it)
   await page.goto("/join/COUSINS26");
   await page.getByLabel(/Your name/).fill("Asha");
-  await page.getByRole("radio", { name: /Traveller 2/ }).check();
   await page.getByRole("button", { name: "Join trip" }).click();
   await expect(page).toHaveURL(/tab=plan/);
 

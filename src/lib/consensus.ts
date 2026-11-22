@@ -62,8 +62,10 @@ const avg = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.le
 export function analyseCandidate(
   c: ConsensusCandidate,
   members: ConsensusMember[],
-  opts: { remainingPerPersonVnd?: number | null } = {},
+  /** groupSize: the travellers expected on the trip, joined or not (quorum counts them all). */
+  opts: { remainingPerPersonVnd?: number | null; groupSize?: number } = {},
 ): CandidateAnalysis {
+  const groupSize = Math.max(members.length, opts.groupSize ?? 0);
   const counts: Record<Vote, number> = { must_do: 0, interested: 0, neutral: 0, not_interested: 0, cannot: 0, done_before: 0 };
   for (const v of c.votes) counts[v.vote]++;
   // "Already done" votes are abstentions for scoring: they say nothing about whether the activity is good.
@@ -94,11 +96,11 @@ export function analyseCandidate(
     .map((m) => m.id);
   const positive = counts.must_do + counts.interested;
   const negative = counts.not_interested + counts.cannot;
-  const quorum = opinions.length >= Math.ceil(members.length * 0.6);
+  const quorum = opinions.length >= Math.ceil(groupSize * 0.6);
   const avgScore = avg(scores) ?? 0;
   const remaining = opts.remainingPerPersonVnd;
   // "Only one fan" is low interest in a real group, but not on a solo or two-person trip.
-  const lowInterest = opinions.length > 0 && (avgScore <= 0 || positive <= (members.length >= 4 ? 1 : 0));
+  const lowInterest = opinions.length > 0 && (avgScore <= 0 || positive <= (groupSize >= 4 ? 1 : 0));
 
   return {
     id: c.id,
@@ -112,7 +114,7 @@ export function analyseCandidate(
     likelyCount: likelyParticipants.length,
     estimatedGroupVnd: c.perPersonVnd * likelyParticipants.length,
     flags: {
-      popularWithEveryone: quorum && negative === 0 && positive >= Math.ceil(members.length * 0.6),
+      popularWithEveryone: quorum && negative === 0 && positive >= Math.ceil(groupSize * 0.6),
       popularWithCouples: !lowInterest && coupleAvg != null && coupleAvg >= 1 && enoughVoters("couple"),
       popularWithSolo: !lowInterest && soloAvg != null && soloAvg >= 1 && enoughVoters("solo"),
       lowInterest,

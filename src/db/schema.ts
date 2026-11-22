@@ -12,6 +12,7 @@
  */
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   bigint,
   boolean,
   check,
@@ -504,7 +505,7 @@ export const tripMembers = pgTable(
     tripId: text("trip_id")
       .notNull()
       .references(() => trips.id, { onDelete: "cascade" }),
-    /** Null = an unclaimed seat (invited traveller who hasn't joined yet). */
+    /** Null = added by name by the owner and not joined online yet (or their login was reset). */
     userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
     displayName: text("display_name").notNull(),
     avatarColor: text("avatar_color").notNull().default("#377A61"),
@@ -579,9 +580,36 @@ export const groupVotes = pgTable(
       .notNull()
       .references(() => tripMembers.id, { onDelete: "cascade" }),
     vote: text("vote", { enum: voteValues }).notNull(),
+    /** For picks not yet in the itinerary: the day this person would like to do it (set by dragging it onto a day). */
+    dayId: text("day_id").references((): AnyPgColumn => itineraryDays.id, { onDelete: "set null" }),
     updatedAt: updatedAt(),
   },
   (t) => [uniqueIndex("votes_uq").on(t.candidateId, t.memberId), index("votes_member_idx").on(t.memberId)],
+);
+
+/**
+ * Files attached to a trip. Today that's the owner's base-plan PDF (one per trip), shown to everyone in the
+ * workspace. The bytes are never loaded with the trip: only /api/trips/[id]/base-plan reads `data`.
+ */
+export const tripDocuments = pgTable(
+  "trip_documents",
+  {
+    id: id(),
+    tripId: text("trip_id")
+      .notNull()
+      .references(() => trips.id, { onDelete: "cascade" }),
+    kind: text("kind", { enum: ["base_plan"] }).notNull().default("base_plan"),
+    fileName: text("file_name").notNull(),
+    contentType: text("content_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    pageCount: integer("page_count").notNull(),
+    /** Page each trip day starts on (index 0 = day 1), found from "Day N" headings; null where not found. */
+    dayPages: json<(number | null)[]>("day_pages").notNull().default(sql`'[]'::jsonb`),
+    data: bytea("data").notNull(),
+    uploadedBy: text("uploaded_by").references(() => tripMembers.id, { onDelete: "set null" }),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("trip_documents_kind_uq").on(t.tripId, t.kind)],
 );
 
 export const comments = pgTable(

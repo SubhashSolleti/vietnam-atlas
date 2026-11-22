@@ -28,7 +28,7 @@ export function AccountSettings({ displayName, avatarColor, isGuest }: { display
       </section>
       <section className="rounded-md border border-bad/40 bg-surface p-5">
         <h2 className="font-sans text-base font-semibold text-bad">Delete account</h2>
-        <p className="mt-1 text-sm text-muted">Permanently deletes your {isGuest ? "guest profile" : "account"} and personal data. Your seats in group trips are released so the group's history stays intact; your votes on those seats are kept anonymously with the seat.</p>
+        <p className="mt-1 text-sm text-muted">Permanently deletes your {isGuest ? "guest profile" : "account"} and personal data. Your places in group trips are released so the group's history stays intact; your picks there are kept, anonymised as "Former traveller".</p>
         <div className="mt-4 flex flex-wrap items-end gap-2">
           <Field label='Type "DELETE" to confirm' name="a-del" error={err}>{(f) => <Input {...f} value={confirmText} onChange={(e) => setConfirmText(e.target.value)} className="w-48" />}</Field>
           <Button variant="danger" disabled={pending || confirmText !== "DELETE"} onClick={() => start(async () => { const r = await deleteAccount(confirmText); if (r && !r.ok) setErr(r.error); })}>Delete permanently</Button>

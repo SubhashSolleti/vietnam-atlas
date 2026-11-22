@@ -3,12 +3,13 @@
 import { randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
-import { and, eq, isNull, ne } from "drizzle-orm";
+import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, t } from "@/db/client";
 import { run, UserError } from "@/lib/action";
 import { limitClient, requireUser } from "@/lib/auth";
 import { rateLimit } from "@/lib/rate-limit";
+import { isStandIn, STAND_IN_PREFIX, standInIds } from "@/lib/party";
 import { daysBetween, isoDate, MAX_TRAVELLERS, MAX_TRIP_DAYS, participantList } from "@/lib/validation";
 import { ACTIVE_TRIP_COOKIE, assertMember, ensureItineraryDays, membersOf } from "@/services/trips";
 
@@ -22,6 +23,34 @@ function newInviteCode() {
 
 async function setActiveTripCookie(tripId: string) {
   (await cookies()).set(ACTIVE_TRIP_COOKIE, tripId, { path: "/", sameSite: "lax", httpOnly: true, maxAge: 365 * 86400 });
+}
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Rewrites every participant list on a trip (itinerary, transport, stays, expenses, shortlist). `map` returns the new
+ * id for an entry, or null to drop it. Used when travellers join or leave, to keep the stand-ins in line (lib/party).
+ */
+async function rewriteParticipants(tx: Tx, tripId: string, map: (id: string) => string | null) {
+  for (const tbl of [t.expenses, t.itineraryItems, t.transportLegs, t.accommodations, t.tripCandidates] as const) {
+    const rows = await tx.select({ id: tbl.id, participants: tbl.participants }).from(tbl).where(eq(tbl.tripId, tripId)).all();
+    for (const r of rows) {
+      if (!r.participants) continue;
+      const next = r.participants.map(map).filter((x): x is string => x !== null);
+      if (next.length !== r.participants.length || next.some((x, i) => x !== r.participants![i])) await tx.update(tbl).set({ participants: next }).where(eq(tbl.id, r.id)).run();
+    }
+  }
+}
+
+/** A new traveller takes the first stand-in's place wherever the not-yet-joined were counted as going. */
+async function takeStandInPlace(tx: Tx, trip: { id: string; travellersCount: number }, membersBefore: number, memberId: string) {
+  const standIn = standInIds(membersBefore, trip.travellersCount)[0];
+  if (standIn) await rewriteParticipants(tx, trip.id, (id) => (id === standIn ? memberId : id));
+}
+
+/** Locks the trip row for the rest of the transaction, so joins to one trip happen one at a time. */
+async function lockTrip(tx: Tx, tripId: string) {
+  return (await tx.select().from(t.trips).where(eq(t.trips.id, tripId)).for("update"))[0]!;
 }
 
 async function touchTrip(tripId: string) {
@@ -74,22 +103,14 @@ export async function createTrip(input: z.input<typeof tripSchema>) {
         })
         .returning()
         .get())!;
-      for (let i = 0; i < v.travellersCount; i++) {
-        const m = (await tx
-          .insert(t.tripMembers)
-          .values({
-            tripId: trip.id,
-            userId: i === 0 ? user.id : null,
-            displayName: i === 0 ? v.displayName : `Traveller ${i + 1}`,
-            role: i === 0 ? "owner" : "member",
-            avatarColor: COLORS[i % COLORS.length]!,
-            sort: i,
-            joinedAt: i === 0 ? new Date().toISOString() : null,
-          })
-          .returning({ id: t.tripMembers.id })
-          .get())!;
-        await tx.insert(t.tripPreferences).values({ memberId: m.id }).run();
-      }
+      // Only the owner to start with: everyone else is added as they join from the invite link.
+      // travellersCount stays as the expected group size, so shared costs are split the right way from day one.
+      const m = (await tx
+        .insert(t.tripMembers)
+        .values({ tripId: trip.id, userId: user.id, displayName: v.displayName, role: "owner", avatarColor: COLORS[0]!, sort: 0, joinedAt: new Date().toISOString() })
+        .returning({ id: t.tripMembers.id })
+        .get())!;
+      await tx.insert(t.tripPreferences).values({ memberId: m.id }).run();
       return trip;
     });
     await ensureItineraryDays(trip);
@@ -191,11 +212,16 @@ export async function setActiveTrip(tripId: string) {
 
 const joinSchema = z.object({
   code: z.string().trim().toUpperCase().min(4).max(16),
-  seatId: z.string().uuid().optional(),
-  displayName: z.string().trim().min(1, "Enter your name").max(40).optional(),
+  displayName: z.string().trim().min(1, "Enter your name").max(40),
 });
 
-/** Join via invite code: claim an unclaimed seat or add yourself as a new member. */
+const sameName = (a: string, b: string) => a.trim().toLocaleLowerCase() === b.trim().toLocaleLowerCase();
+
+/**
+ * Join via invite code with just a name. Everyone is added in the order they join, so two people joining at the same
+ * moment never compete for anything. The one exception: a traveller the owner added by name (someone who hasn't
+ * joined online yet, or whose login was reset) is matched by that name, so their picks carry over.
+ */
 export async function joinTrip(input: z.input<typeof joinSchema>) {
   return run(async () => {
     const v = joinSchema.parse(input);
@@ -211,36 +237,37 @@ export async function joinTrip(input: z.input<typeof joinSchema>) {
       return { tripId: trip.id, alreadyMember: true };
     }
     const now = new Date().toISOString();
+    const owner = (await membersOf(trip.id)).find((m) => m.role === "owner")?.displayName ?? "the trip owner";
     await db.transaction(async (tx) => {
-      if (v.seatId) {
-        const seat = await tx
-          .select()
-          .from(t.tripMembers)
-          .where(and(eq(t.tripMembers.id, v.seatId), eq(t.tripMembers.tripId, trip.id), isNull(t.tripMembers.userId)))
-          .get();
-        if (!seat) throw new UserError("That seat has already been claimed.");
-        // An invite never confers ownership: an unclaimed owner seat is claimed as a member.
+      const locked = await lockTrip(tx, trip.id);
+      const members = await tx.select().from(t.tripMembers).where(eq(t.tripMembers.tripId, trip.id)).all();
+      const match = members.filter((m) => sameName(m.displayName, v.displayName));
+      const waiting = match.find((m) => !m.userId);
+      if (waiting) {
+        // Conditional on still being unlinked, so a simultaneous join with the same name can't take it twice.
         const claimed = await tx
           .update(t.tripMembers)
-          .set({ userId: user.id, joinedAt: now, ...(seat.role === "owner" ? { role: "member" as const } : {}), ...(v.displayName ? { displayName: v.displayName } : {}) })
-          .where(and(eq(t.tripMembers.id, seat.id), isNull(t.tripMembers.userId)))
+          .set({ userId: user.id, joinedAt: now, ...(waiting.role === "owner" ? { role: "member" as const } : {}) })
+          .where(and(eq(t.tripMembers.id, waiting.id), isNull(t.tripMembers.userId)))
           .returning({ id: t.tripMembers.id })
           .get();
-        if (!claimed) throw new UserError("That seat has already been claimed.");
-      } else {
-        if (!v.displayName) throw new UserError("Enter your name to join.");
-        const count = (await tx.select({ id: t.tripMembers.id }).from(t.tripMembers).where(eq(t.tripMembers.tripId, trip.id)).all()).length;
-        if (count >= MAX_TRAVELLERS) throw new UserError(`This trip already has ${MAX_TRAVELLERS} travellers. Ask the owner to free up a seat.`);
-        const m = (await tx
-          .insert(t.tripMembers)
-          .values({ tripId: trip.id, userId: user.id, displayName: v.displayName, avatarColor: COLORS[count % COLORS.length]!, sort: count, joinedAt: now })
-          .returning({ id: t.tripMembers.id })
-          .get())!;
-        await tx.insert(t.tripPreferences).values({ memberId: m.id }).run();
-        await tx.update(t.trips).set({ travellersCount: count + 1 }).where(eq(t.trips.id, trip.id)).run();
+        if (claimed) return;
       }
+      if (match.length)
+        throw new UserError(`Someone called ${match[0]!.displayName} has already joined. If that's you on a new phone, ask ${owner} to reset your login under Members. Otherwise add an initial, like "${v.displayName} S".`);
+      if (members.length >= MAX_TRAVELLERS) throw new UserError(`This trip already has ${MAX_TRAVELLERS} travellers.`);
+      const sort = Math.max(0, ...members.map((m) => m.sort + 1));
+      const m = (await tx
+        .insert(t.tripMembers)
+        .values({ tripId: trip.id, userId: user.id, displayName: v.displayName, avatarColor: COLORS[sort % COLORS.length]!, sort, joinedAt: now })
+        .returning({ id: t.tripMembers.id })
+        .get())!;
+      await tx.insert(t.tripPreferences).values({ memberId: m.id }).run();
+      await takeStandInPlace(tx, locked, members.length, m.id);
+      // The group size grows if more people join than the owner expected; it never shrinks here.
+      await tx.update(t.trips).set({ travellersCount: sql`GREATEST(${t.trips.travellersCount}, ${members.length + 1})` }).where(eq(t.trips.id, trip.id)).run();
     });
-    if (user.isGuest && v.displayName && user.displayName.startsWith("Guest "))
+    if (user.isGuest && user.displayName.startsWith("Guest "))
       await db.update(t.users).set({ displayName: v.displayName }).where(eq(t.users.id, user.id)).run();
     await setActiveTripCookie(trip.id);
     await touchTrip(trip.id);
@@ -258,7 +285,7 @@ export async function leaveTrip(tripId: string) {
       if (others.length) throw new UserError("Transfer ownership to another member before leaving.");
       throw new UserError("You're the only traveller who has joined. Delete the trip instead, or invite someone and make them owner first.");
     }
-    // Keep the seat (and its votes) but release it, with no special role, so the trip's history stays intact.
+    // Keep the traveller (and their picks) but unlink this login, with no special role, so the trip's history stays intact.
     await db.update(t.tripMembers).set({ userId: null, joinedAt: null, role: "member" }).where(eq(t.tripMembers.id, member.id)).run();
     await touchTrip(tripId);
     (await cookies()).delete(ACTIVE_TRIP_COOKIE);
@@ -299,20 +326,28 @@ export async function updateMember(memberId: string, input: z.input<typeof membe
   });
 }
 
-export async function addSeat(tripId: string, displayName: string) {
+/** Adds someone by name who won't join online (or not yet). They're linked when they join with the same name. */
+export async function addTraveller(tripId: string, displayName: string) {
   return run(async () => {
     const name = z.string().trim().min(1).max(40).parse(displayName);
     const user = await requireUser();
     await assertMember(tripId, user.id, ["owner", "editor"]);
     const members = await membersOf(tripId);
     if (members.length >= MAX_TRAVELLERS) throw new UserError(`A trip can have up to ${MAX_TRAVELLERS} travellers.`);
-    const m = (await db
-      .insert(t.tripMembers)
-      .values({ tripId, displayName: name, avatarColor: COLORS[members.length % COLORS.length]!, sort: members.length })
-      .returning({ id: t.tripMembers.id })
-      .get())!;
-    await db.insert(t.tripPreferences).values({ memberId: m.id }).run();
-    await db.update(t.trips).set({ travellersCount: members.length + 1 }).where(eq(t.trips.id, tripId)).run();
+    if (members.some((m) => sameName(m.displayName, name))) throw new UserError(`${name} is already on this trip.`);
+    await db.transaction(async (tx) => {
+      const locked = await lockTrip(tx, tripId);
+      const count = (await tx.select({ id: t.tripMembers.id }).from(t.tripMembers).where(eq(t.tripMembers.tripId, tripId)).all()).length;
+      const sort = Math.max(0, ...members.map((m) => m.sort + 1));
+      const m = (await tx
+        .insert(t.tripMembers)
+        .values({ tripId, displayName: name, avatarColor: COLORS[sort % COLORS.length]!, sort })
+        .returning({ id: t.tripMembers.id })
+        .get())!;
+      await tx.insert(t.tripPreferences).values({ memberId: m.id }).run();
+      await takeStandInPlace(tx, locked, count, m.id);
+      await tx.update(t.trips).set({ travellersCount: sql`GREATEST(${t.trips.travellersCount}, ${count + 1})` }).where(eq(t.trips.id, tripId)).run();
+    });
     await touchTrip(tripId);
     revalidatePath("/", "layout");
     return {};
@@ -327,20 +362,19 @@ export async function removeMember(memberId: string) {
     await assertMember(target.tripId, user.id, ["owner"]);
     if (target.role === "owner") throw new UserError("The owner can't be removed.");
     await db.transaction(async (tx) => {
-      // Take the traveller out of every cost split first, so their share isn't silently re-billed to others.
-      const strip = async <T extends { id: string; participants: string[] | null }>(rows: T[], update: (id: string, p: string[]) => Promise<unknown>) => {
-        for (const r of rows) if (r.participants?.includes(memberId)) await update(r.id, r.participants.filter((x) => x !== memberId));
-      };
-      const byTrip = async (tbl: typeof t.expenses | typeof t.itineraryItems | typeof t.transportLegs | typeof t.accommodations | typeof t.tripCandidates) =>
-        await tx.select({ id: tbl.id, participants: tbl.participants }).from(tbl).where(eq(tbl.tripId, target.tripId)).all();
-      await strip(await byTrip(t.expenses), async (id, p) => await tx.update(t.expenses).set({ participants: p }).where(eq(t.expenses.id, id)).run());
-      await strip(await byTrip(t.itineraryItems), async (id, p) => await tx.update(t.itineraryItems).set({ participants: p }).where(eq(t.itineraryItems.id, id)).run());
-      await strip(await byTrip(t.transportLegs), async (id, p) => await tx.update(t.transportLegs).set({ participants: p }).where(eq(t.transportLegs.id, id)).run());
-      await strip(await byTrip(t.accommodations), async (id, p) => await tx.update(t.accommodations).set({ participants: p }).where(eq(t.accommodations.id, id)).run());
-      await strip(await byTrip(t.tripCandidates), async (id, p) => await tx.update(t.tripCandidates).set({ participants: p }).where(eq(t.tripCandidates.id, id)).run());
+      const trip = await lockTrip(tx, target.tripId);
+      const before = (await tx.select({ id: t.tripMembers.id }).from(t.tripMembers).where(eq(t.tripMembers.tripId, target.tripId)).all()).length;
+      // The group is one smaller (never below who's left). Take the traveller out of every cost split, so their share
+      // isn't silently re-billed to others, and move the stand-ins for people not joined yet down one place.
+      const travellers = Math.max(before - 1, trip.travellersCount - 1);
+      await rewriteParticipants(tx, target.tripId, (id) => {
+        if (id === memberId) return null;
+        if (!isStandIn(id)) return id;
+        const n = Number(id.slice(STAND_IN_PREFIX.length)) - 1;
+        return n > before - 1 && n <= travellers ? `${STAND_IN_PREFIX}${n}` : null;
+      });
       await tx.delete(t.tripMembers).where(eq(t.tripMembers.id, memberId)).run();
-      const remaining = (await tx.select({ id: t.tripMembers.id }).from(t.tripMembers).where(eq(t.tripMembers.tripId, target.tripId)).all()).length;
-      await tx.update(t.trips).set({ travellersCount: remaining, updatedAt: new Date().toISOString() }).where(eq(t.trips.id, target.tripId)).run();
+      await tx.update(t.trips).set({ travellersCount: travellers, updatedAt: new Date().toISOString() }).where(eq(t.trips.id, target.tripId)).run();
     });
     revalidatePath("/", "layout");
     return {};
@@ -348,17 +382,17 @@ export async function removeMember(memberId: string) {
 }
 
 /**
- * Frees a claimed seat (owner only) without deleting anything: the traveller's picks stay, and they can claim the
- * seat again from the invite link on a new phone or browser.
+ * Unlinks a traveller from the phone or browser they joined on (owner only), without deleting anything: their picks
+ * stay, and joining again from the invite link with the same name links them back.
  */
-export async function releaseSeat(memberId: string) {
+export async function resetLogin(memberId: string) {
   return run(async () => {
     const user = await requireUser();
     const target = await db.select().from(t.tripMembers).where(eq(t.tripMembers.id, memberId)).get();
     if (!target) throw new UserError("Member not found.");
     await assertMember(target.tripId, user.id, ["owner"]);
-    if (target.role === "owner") throw new UserError("The owner's seat can't be freed.");
-    if (!target.userId) throw new UserError(`${target.displayName}'s seat is already free.`);
+    if (target.role === "owner") throw new UserError("The owner's login can't be reset here.");
+    if (!target.userId) throw new UserError(`${target.displayName} isn't linked to a login yet.`);
     await db.update(t.tripMembers).set({ userId: null, joinedAt: null }).where(eq(t.tripMembers.id, memberId)).run();
     await touchTrip(target.tripId);
     revalidatePath("/", "layout");
@@ -494,31 +528,80 @@ export async function removeCandidate(candidateId: string) {
   });
 }
 
-export async function castVote(candidateId: string, vote: (typeof t.voteValues)[number] | null, onBehalfOf?: string) {
+type VoteValue = (typeof t.voteValues)[number];
+
+/** Who a pick is recorded for: yourself, or (owners and editors) a traveller who hasn't joined online. */
+async function resolveVoter(tripId: string, member: { id: string; role: string }, onBehalfOf: string | undefined) {
+  if (!onBehalfOf || onBehalfOf === member.id) return member.id;
+  const other = await db.select().from(t.tripMembers).where(and(eq(t.tripMembers.id, onBehalfOf), eq(t.tripMembers.tripId, tripId))).get();
+  if (!other) throw new UserError("Traveller not found.");
+  if (other.userId) throw new UserError(`${other.displayName} has joined: they need to make their own picks.`);
+  if (member.role === "member") throw new UserError("Only the owner or an editor can record picks for others.");
+  return other.id;
+}
+
+async function assertTripDay(tripId: string, dayId: string) {
+  const day = await db.select({ id: t.itineraryDays.id }).from(t.itineraryDays).where(and(eq(t.itineraryDays.id, z.string().uuid().parse(dayId)), eq(t.itineraryDays.tripId, tripId))).get();
+  if (!day) throw new UserError("That day isn't part of this trip.");
+}
+
+/**
+ * Records one vote. `dayId`: undefined keeps the day already chosen, null clears it, a day id sets it (the day this
+ * person wants to do a pick that isn't in the itinerary yet).
+ */
+async function writeVote(tripId: string, candidateId: string, voterId: string, vote: VoteValue | null, dayId: string | null | undefined) {
+  if (dayId) await assertTripDay(tripId, dayId);
+  if (vote === null) {
+    await db.delete(t.groupVotes).where(and(eq(t.groupVotes.candidateId, candidateId), eq(t.groupVotes.memberId, voterId))).run();
+    return;
+  }
+  const now = new Date().toISOString();
+  await db
+    .insert(t.groupVotes)
+    .values({ candidateId, memberId: voterId, vote, dayId: dayId ?? null })
+    .onConflictDoUpdate({ target: [t.groupVotes.candidateId, t.groupVotes.memberId], set: { vote, updatedAt: now, ...(dayId !== undefined ? { dayId } : {}) } })
+    .run();
+}
+
+export async function castVote(candidateId: string, vote: VoteValue | null, onBehalfOf?: string, dayId?: string | null) {
   return run(async () => {
     const v = z.enum(t.voteValues).nullable().parse(vote);
     const user = await requireUser();
     const { candidate, member } = await candidateWithAccess(candidateId, user.id);
-    let voterId = member.id;
-    if (onBehalfOf && onBehalfOf !== member.id) {
-      // Owners/editors may record votes for seats that haven't been claimed yet (e.g. collected offline).
-      const seat = await db.select().from(t.tripMembers).where(and(eq(t.tripMembers.id, onBehalfOf), eq(t.tripMembers.tripId, candidate.tripId))).get();
-      if (!seat) throw new UserError("Traveller not found.");
-      if (seat.userId) throw new UserError(`${seat.displayName} has joined: they need to vote themselves.`);
-      if (member.role === "member") throw new UserError("Only the owner or an editor can record votes for others.");
-      voterId = seat.id;
-    }
-    if (v === null) {
-      await db.delete(t.groupVotes).where(and(eq(t.groupVotes.candidateId, candidateId), eq(t.groupVotes.memberId, voterId))).run();
-    } else {
-      await db.insert(t.groupVotes)
-        .values({ candidateId, memberId: voterId, vote: v })
-        .onConflictDoUpdate({ target: [t.groupVotes.candidateId, t.groupVotes.memberId], set: { vote: v, updatedAt: new Date().toISOString() } })
-        .run();
-    }
+    const voterId = await resolveVoter(candidate.tripId, member, onBehalfOf);
+    await writeVote(candidate.tripId, candidateId, voterId, v, dayId === undefined ? undefined : dayId === null ? null : z.string().uuid().parse(dayId));
     await touchTrip(candidate.tripId);
     revalidatePath("/", "layout");
     return {};
+  });
+}
+
+/**
+ * The board's one-step pick: puts the activity on the shortlist if it isn't there yet, then records the vote (and the
+ * day it was dropped on) for you or for a traveller you're picking for.
+ */
+export async function pickActivity(tripId: string, activityId: string, input: { vote: VoteValue | null; dayId?: string | null; onBehalfOf?: string }) {
+  return run(async () => {
+    z.string().uuid().parse(activityId);
+    const v = z.object({ vote: z.enum(t.voteValues).nullable(), dayId: z.string().uuid().nullable().optional(), onBehalfOf: z.string().uuid().optional() }).parse(input);
+    const user = await requireUser();
+    const { member } = await assertMember(tripId, user.id);
+    const voterId = await resolveVoter(tripId, member, v.onBehalfOf);
+    let candidate = await db.select().from(t.tripCandidates).where(and(eq(t.tripCandidates.tripId, tripId), eq(t.tripCandidates.activityId, activityId))).get();
+    if (!candidate) {
+      if (v.vote === null) return { candidateId: null };
+      const act = await db.select({ id: t.activities.id }).from(t.activities).where(eq(t.activities.id, activityId)).get();
+      if (!act) throw new UserError("Activity not found.");
+      await db.insert(t.tripCandidates).values({ tripId, activityId, addedBy: member.id }).onConflictDoNothing().run();
+      candidate = (await db.select().from(t.tripCandidates).where(and(eq(t.tripCandidates.tripId, tripId), eq(t.tripCandidates.activityId, activityId))).get())!;
+    } else if (candidate.status === "rejected" && v.vote && ["must_do", "interested"].includes(v.vote)) {
+      // Someone still wants it: back into discussion so it shows up again.
+      await db.update(t.tripCandidates).set({ status: "discussion" }).where(eq(t.tripCandidates.id, candidate.id)).run();
+    }
+    await writeVote(tripId, candidate.id, voterId, v.vote, v.dayId);
+    await touchTrip(tripId);
+    revalidatePath("/", "layout");
+    return { candidateId: candidate.id };
   });
 }
 

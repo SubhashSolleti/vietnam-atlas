@@ -6,6 +6,7 @@ import { db, t } from "@/db/client";
 import { activityCostFromPrice, computeBudget, type BaselineCategory, type BudgetLine, dedupeBundles } from "@/lib/budget-engine";
 import { analyseCandidate, suggestShortlist, type Vote } from "@/lib/consensus";
 import { computePlanAlerts, type PlanDay, type PlanLeg } from "@/lib/planning-alerts";
+import { isStandIn, partyIds } from "@/lib/party";
 import { addDays, dateRange } from "@/lib/utils";
 import { getCatalog } from "./catalog";
 import { getFx } from "./settings";
@@ -66,10 +67,22 @@ export async function ensureItineraryDays(trip: Pick<Trip, "id" | "startDate" | 
   if (missing.length) await conn.insert(t.itineraryDays).values(missing.map((date) => ({ tripId: trip.id, date }))).run();
 }
 
+/** The trip's base-plan PDF details (never the file itself), or null. */
+export async function basePlanDocument(tripId: string) {
+  const doc = await db
+    .select({ fileName: t.tripDocuments.fileName, sizeBytes: t.tripDocuments.sizeBytes, pageCount: t.tripDocuments.pageCount, dayPages: t.tripDocuments.dayPages, createdAt: t.tripDocuments.createdAt, uploadedBy: t.tripDocuments.uploadedBy })
+    .from(t.tripDocuments)
+    .where(and(eq(t.tripDocuments.tripId, tripId), eq(t.tripDocuments.kind, "base_plan")))
+    .get();
+  return doc ? { ...doc, url: `/api/trips/${tripId}/base-plan?v=${encodeURIComponent(doc.createdAt)}` } : null;
+}
+export type BasePlanDocument = NonNullable<Awaited<ReturnType<typeof basePlanDocument>>>;
+
 /* ───────────── Group workspace ───────────── */
 
 export async function tripWorkspace(tripId: string) {
   const members = await membersOf(tripId);
+  const expected = (await db.select({ n: t.trips.travellersCount }).from(t.trips).where(eq(t.trips.id, tripId)).get())?.n ?? members.length;
   const candidates = await db.select().from(t.tripCandidates).where(eq(t.tripCandidates.tripId, tripId)).orderBy(desc(t.tripCandidates.createdAt)).all();
   const ids = candidates.map((c) => c.id);
   const votes = ids.length ? await db.select().from(t.groupVotes).where(inArray(t.groupVotes.candidateId, ids)).all() : [];
@@ -100,7 +113,7 @@ export async function tripWorkspace(tripId: string) {
     candidates: candidates.map((c) => {
       // Shared prices are split between the people actually taking part (everyone when not narrowed down).
       const memberIds = new Set(members.map((m) => m.id));
-      const party = c.participants ? [...new Set(c.participants)].filter((p) => memberIds.has(p)).length : members.length;
+      const party = c.participants ? [...new Set(c.participants)].filter((p) => memberIds.has(p)).length : Math.max(members.length, expected);
       const est = activityCostFromPrice(prices.get(c.activityId), party);
       const perPersonVnd = c.agreedPriceVnd ?? (est.costMode === "per_person" ? est.amountVnd : party ? Math.round(est.amountVnd / party) : 0);
       return {
@@ -136,7 +149,7 @@ export function consensusFor(trip: Trip, workspace: Awaited<ReturnType<typeof tr
         alreadyBudgeted: c.status === "approved" || c.status === "scheduled",
       },
       workspace.members.map((m) => ({ id: m.id, travellerType: m.travellerType })),
-      { remainingPerPersonVnd },
+      { remainingPerPersonVnd, groupSize: trip.travellersCount },
     ),
   );
   return { analyses, suggested: suggestShortlist(analyses) };
@@ -209,7 +222,8 @@ export async function planSnapshot(tripId: string, budget?: { perPersonPlannedVn
 
 export async function tripBudget(trip: Trip) {
   const members = await membersOf(trip.id);
-  const memberIds = members.map((m) => m.id);
+  // Shared costs are split with the travellers expected but not joined yet, so a van isn't billed to the first three.
+  const memberIds = partyIds(members.map((m) => m.id), trip.travellersCount);
   const fx = await getFx();
   const { items, legs, stays } = await itineraryData(trip.id);
   const days = await db.select().from(t.itineraryDays).where(eq(t.itineraryDays.tripId, trip.id)).all();
@@ -357,5 +371,7 @@ export async function tripBudget(trip: Trip) {
     emergencyReservePct: s.emergencyReservePct,
     targetPerPersonVnd: trip.budgetTargetInr ? trip.budgetTargetInr * fx.inrToVnd : null,
   });
-  return { result, members, fx, categories: cats, expenses };
+  // Stand-ins share costs but are nobody in particular, so they're never reported as over budget.
+  result.overBudgetMemberIds = result.overBudgetMemberIds.filter((id) => !isStandIn(id));
+  return { result, members, fx, categories: cats, expenses, travellers: memberIds.length };
 }

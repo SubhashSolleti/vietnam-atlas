@@ -299,7 +299,7 @@ export default async function HomePage() {
             </div>
             <ol className="grid gap-4 sm:grid-cols-2 lg:col-span-7">
               {[
-                { icon: UserPlus, t: "Invite the group", d: "Share a link or code. Everyone claims their seat and sets their own preferences." },
+                { icon: UserPlus, t: "Invite the group", d: "Share one link. Everyone joins with just their name and picks what they want to do." },
                 { icon: ListChecks, t: "Shortlist", d: "Anyone can add experiences from the catalogue to the group shortlist." },
                 { icon: Vote, t: "Vote & discuss", d: "Must do, interested, neutral or not for me, with comments on each option." },
                 { icon: Users, t: "Find consensus", d: "See what everyone loves, what's divisive, over budget or out of season." },

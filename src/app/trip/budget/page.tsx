@@ -23,7 +23,7 @@ export default async function BudgetPage() {
       </div>
     );
   const { trip, member } = active;
-  const { result, members, fx, categories, expenses } = await tripBudget(trip);
+  const { result, members, fx, categories, expenses, travellers } = await tripBudget(trip);
   const catalog = await getCatalog();
   const destName = Object.fromEntries(catalog.destinations.map((d) => [d.id, d.name]));
   return (
@@ -32,12 +32,13 @@ export default async function BudgetPage() {
       <p className="eyebrow">Budget calculator</p>
       <h1 className="mt-1 text-4xl md:text-5xl">{trip.name}</h1>
       <p className="mt-2 text-sm text-muted">
-        {formatLongDate(trip.startDate)} – {formatLongDate(trip.endDate)} · {members.length} travellers · international flights {trip.settings.includeInternationalFlights ? "included" : "excluded (already booked)"} ·{" "}
+        {formatLongDate(trip.startDate)} – {formatLongDate(trip.endDate)} · {travellers} travellers · international flights {trip.settings.includeInternationalFlights ? "included" : "excluded (already booked)"} ·{" "}
         <Link href="/trip" className="text-accent hover:underline">Back to itinerary</Link>
       </p>
       <BudgetWorkspace
         tripId={trip.id}
         canManage={member.role !== "member"}
+        travellers={travellers}
         scenario={trip.scenario}
         settings={trip.settings}
         targetInr={trip.budgetTargetInr}

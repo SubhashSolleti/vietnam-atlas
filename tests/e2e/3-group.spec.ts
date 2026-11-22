@@ -14,7 +14,9 @@ test("Scenario 3: create a trip, invite, join from another browser, preferences,
   await page.getByRole("button", { name: "Create trip" }).click();
   await expect(page).toHaveURL(/\/group\/[0-9a-f-]+\?tab=members/);
   await expect(page.getByRole("heading", { level: 1, name: "E2E Cousins Test" })).toBeVisible();
-  await expect(page.getByRole("listitem").filter({ hasText: /Traveller 7/ })).toBeVisible();
+  // Only the owner to start: no placeholder seats, everyone else joins by name.
+  await expect(page.getByText("1/7 joined")).toBeVisible();
+  await expect(page.getByRole("listitem").filter({ hasText: /Traveller \d/ })).toHaveCount(0);
   const code = (await page.getByText(/^Code/).locator("strong").textContent())!.trim();
   expect(code).toMatch(/^[A-Z0-9]{8}$/);
   const tripUrl = page.url().split("?")[0]!;
@@ -29,7 +31,7 @@ test("Scenario 3: create a trip, invite, join from another browser, preferences,
   const p2 = await ctx2.newPage();
   await p2.goto(`/join/${code}`);
   await expect(p2.getByRole("heading", { name: "E2E Cousins Test" })).toBeVisible();
-  await p2.getByRole("radio", { name: /Traveller 2/ }).check();
+  await expect(p2.getByRole("radio")).toHaveCount(0);
   await p2.getByLabel(/Your name/).fill("Ravi");
   await p2.getByRole("button", { name: "Join trip" }).click();
   await expect(p2).toHaveURL(/tab=plan/);
@@ -53,8 +55,22 @@ test("Scenario 3: create a trip, invite, join from another browser, preferences,
   await expect(ownerCard.getByText(/Ravi: Must do/)).toBeVisible();
   await expect(ownerCard.getByText(/2\/7 voted/)).toBeVisible();
 
-  // Owner records a vote for an unjoined traveller and approves via group decision
-  await ownerCard.getByLabel("Record a vote on behalf of").selectOption({ label: "For Traveller 3 (not joined)" });
+  // A third traveller tries the same name: told to add an initial, not merged into Ravi
+  const ctx4 = await browser.newContext();
+  const p4 = await ctx4.newPage();
+  await p4.goto(`/join/${code}`);
+  await p4.getByLabel(/Your name/).fill("ravi");
+  await p4.getByRole("button", { name: "Join trip" }).click();
+  await expect(p4.getByText(/Someone called Ravi has already joined/)).toBeVisible();
+  await ctx4.close();
+
+  // Owner adds someone who won't join online, and records a vote for them
+  await page.goto(`${tripUrl}?tab=members`);
+  await page.getByPlaceholder(/Add someone who won't join online/).fill("Nani");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(page.getByRole("listitem").filter({ hasText: /Nani/ })).toBeVisible();
+  await page.goto(`${tripUrl}?tab=shortlist`);
+  await ownerCard.getByLabel("Record a vote on behalf of").selectOption({ label: "For Nani (not joined)" });
   await ownerCard.getByRole("radio", { name: "Interested", exact: true }).click();
   await expect(ownerCard.getByText(/3\/7 voted/)).toBeVisible();
   await page.goto(`${tripUrl}?tab=consensus`);

@@ -8,6 +8,7 @@ import { run } from "@/lib/action";
 import { requireUser } from "@/lib/auth";
 import { activityCostFromPrice } from "@/lib/budget-engine";
 import type { Vote } from "@/lib/consensus";
+import { partyIds } from "@/lib/party";
 import { buildPersonalPlans, type PlanChanges } from "@/lib/personal-plans";
 import { getCatalog } from "@/services/catalog";
 import { assertMember, membersOf } from "@/services/trips";
@@ -38,8 +39,10 @@ export async function generatePersonalPlans(tripId: string, input: { apply: bool
     const actById = new Map(catalog.activities.map((a) => [a.id, a]));
     const destBySlug = new Map(catalog.destinations.map((d) => [d.slug, d]));
 
+    // Travellers expected but not joined yet count as going (they haven't said otherwise): see lib/party.
+    const party = partyIds(members.map((m) => m.id), trip.travellersCount);
     const changes: PlanChanges = buildPersonalPlans({
-      members,
+      members: party.map((id) => ({ id })),
       days,
       items,
       picks: candidates.flatMap((c) => {
@@ -53,7 +56,7 @@ export async function generatePersonalPlans(tripId: string, input: { apply: bool
             title: a.title,
             destinationIds: [a.destinationId, ...(parentId ? [parentId] : [])],
             durationMin: Math.max(30, Math.round(a.durationHours * 60)),
-            votes: votes.filter((v) => v.candidateId === c.id).map((v) => ({ memberId: v.memberId, vote: v.vote as Vote })),
+            votes: votes.filter((v) => v.candidateId === c.id).map((v) => ({ memberId: v.memberId, vote: v.vote as Vote, dayId: v.dayId })),
           },
         ];
       }),
@@ -63,7 +66,7 @@ export async function generatePersonalPlans(tripId: string, input: { apply: bool
     const itemById = new Map(items.map((i) => [i.id, i]));
     const summary: PlanSummary = {
       updated: changes.updates.map((u) => ({ title: itemById.get(u.itemId)!.title, date: dateOf.get(itemById.get(u.itemId)!.dayId)!, going: u.going })),
-      added: changes.additions.map((a) => ({ title: a.title, date: a.date, going: a.participants?.length ?? members.length })),
+      added: changes.additions.map((a) => ({ title: a.title, date: a.date, going: a.participants?.length ?? party.length })),
       unplaced: changes.unplaced.map((u) => ({ title: u.title, reason: u.reason })),
       nobodyGoing: changes.nobodyGoing.map((id) => ({ title: itemById.get(id)!.title, date: dateOf.get(itemById.get(id)!.dayId)! })),
       applied: false,
@@ -85,9 +88,8 @@ export async function generatePersonalPlans(tripId: string, input: { apply: bool
       const nextSort = new Map<string, number>();
       for (const i of items) nextSort.set(i.dayId, Math.max(nextSort.get(i.dayId) ?? 0, i.sort + 1));
       for (const a of changes.additions) {
-        const party = a.participants?.length ?? members.length;
         const cand = candidates.find((c) => c.activityId === a.activityId)!;
-        const est = activityCostFromPrice(prices.get(a.activityId), party);
+        const est = activityCostFromPrice(prices.get(a.activityId), a.participants?.length ?? party.length);
         const sort = nextSort.get(a.dayId) ?? 0;
         nextSort.set(a.dayId, sort + 1);
         await tx

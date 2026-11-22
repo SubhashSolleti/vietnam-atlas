@@ -1,20 +1,26 @@
 "use client";
 
-import { Check, ChevronDown, History, Plus, Printer, Sparkles, Star, X } from "lucide-react";
+import { Check, ChevronDown, History, LayoutGrid, List, Plus, Printer, Sparkles, Star, X } from "lucide-react";
 import Link from "next/link";
 import { Fragment, useMemo, useState, useTransition } from "react";
 import { generatePersonalPlans, type PlanSummary } from "@/app/actions/plans";
-import { addCandidate, castVote } from "@/app/actions/trips";
+import { pickActivity } from "@/app/actions/trips";
 import { Money } from "@/components/catalog/price";
 import { Avatar } from "@/components/ui/avatar";
 import { Button, ButtonLink } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/toast";
 import { VOTE_LABELS } from "@/content/taxonomy";
+import { isStandIn } from "@/lib/party";
 import { cn, formatDay, formatDuration } from "@/lib/utils";
+import { BasePlanPdf, DayPdfLink, type PlanPdf } from "./base-plan-pdf";
+import { PlanBoard } from "./plan-board";
 
-type Vote = keyof typeof VOTE_LABELS;
-type Member = { id: string; name: string; color: string; joined: boolean };
+export type Vote = keyof typeof VOTE_LABELS;
+/** One person's pick: their vote, and for extras the day they'd like to do it. */
+export type Pick = { vote: Vote; dayId: string | null };
+export type BoardMember = { id: string; name: string; color: string; joined: boolean };
+type Member = BoardMember;
 type PriceInfo = { minVnd: number; maxVnd: number; unit: string; status: string } | null;
 export type PickItem = {
   id: string;
@@ -25,11 +31,10 @@ export type PickItem = {
   notes: string | null;
   activityId: string | null;
   slug: string | null;
-  candidateId: string | null;
   participants: string[] | null;
 };
 export type PickDay = { id: string; date: string; title: string | null; notes: string | null; destinationId: string | null; destinationName: string | null; items: PickItem[] };
-export type PickExtra = { activityId: string; title: string; slug: string; durationMin: number; tier: "free" | "low" | "paid"; price: PriceInfo; candidateId: string | null; destinationId: string };
+export type PickExtra = { activityId: string; title: string; slug: string; durationMin: number; tier: "free" | "low" | "paid"; price: PriceInfo; destinationId: string };
 
 const OUT: Vote[] = ["not_interested", "cannot", "done_before"];
 const IN: Vote[] = ["must_do", "interested"];
@@ -40,6 +45,7 @@ const CHOICES: { vote: Vote; label: string; icon: typeof Check }[] = [
   { vote: "done_before", label: "Already done", icon: History },
 ];
 const SHORT: Record<Vote, string> = { must_do: "Must do", interested: "In", neutral: "Neutral", not_interested: "Skip", cannot: "Can't", done_before: "Done" };
+const isActivity = (i: PickItem) => i.type === "activity" && !!i.activityId;
 
 export function PicksPanel({
   tripId,
@@ -48,8 +54,10 @@ export function PicksPanel({
   canManage,
   anonymous,
   members,
+  expectedTravellers,
   days,
   extras,
+  pdf,
   votes: serverVotes,
 }: {
   tripId: string;
@@ -58,58 +66,53 @@ export function PicksPanel({
   canManage: boolean;
   anonymous: boolean;
   members: Member[];
+  /** The group size the owner expects (some may not have joined yet). */
+  expectedTravellers: number;
   days: PickDay[];
   extras: PickExtra[];
-  /** candidateId → votes (only your own when the trip votes anonymously). */
-  votes: Record<string, { memberId: string; vote: Vote }[]>;
+  pdf: PlanPdf | null;
+  /** activityId → picks (only your own, plus offline travellers' for owners, when the trip votes anonymously). */
+  votes: Record<string, { memberId: string; vote: Vote; dayId: string | null }[]>;
 }) {
   const toast = useToast();
-  const [view, setView] = useState<"mine" | "everyone" | "plans">("mine");
-  const [actingFor, setActingFor] = useState(myMemberId);
+  const [view, setView] = useState<"board" | "list" | "everyone" | "plans">("board");
+  const [personId, setPersonId] = useState(myMemberId);
   const [planFor, setPlanFor] = useState(myMemberId);
-  // Optimistic votes, keyed by candidate then member; server data replaces them on the next render.
-  const [local, setLocal] = useState<Record<string, Record<string, Vote | null>>>({});
-  const [localCandidates, setLocalCandidates] = useState<Record<string, string>>({});
+  // Optimistic picks, keyed by activity then member; server data replaces them on the next render.
+  const [local, setLocal] = useState<Record<string, Record<string, Pick | null>>>({});
   const [, start] = useTransition();
 
-  const voteOf = (candidateId: string | null, memberId: string): Vote | undefined => {
-    if (!candidateId) return undefined;
-    const o = local[candidateId];
+  const pickOf = (activityId: string | null, memberId: string): Pick | undefined => {
+    if (!activityId) return undefined;
+    const o = local[activityId];
     if (o && memberId in o) return o[memberId] ?? undefined;
-    return serverVotes[candidateId]?.find((v) => v.memberId === memberId)?.vote;
+    const v = serverVotes[activityId]?.find((x) => x.memberId === memberId);
+    return v ? { vote: v.vote, dayId: v.dayId } : undefined;
   };
-  const candidateFor = (activityId: string, candidateId: string | null) => candidateId ?? localCandidates[activityId] ?? null;
-  const unjoined = members.filter((m) => !m.joined && m.id !== myMemberId);
-  const actingName = members.find((m) => m.id === actingFor)?.name ?? "you";
+  const voteOf = (activityId: string | null, memberId: string) => pickOf(activityId, memberId)?.vote;
+  const person = members.find((m) => m.id === personId) ?? members.find((m) => m.id === myMemberId)!;
+  // You edit your own board; owners and editors also edit for travellers who haven't joined online.
+  const editable = person.id === myMemberId || (canManage && !person.joined);
+  const personName = person.id === myMemberId ? "you" : person.name;
+  // On anonymous trips you only see your own picks (and, for owners, offline travellers you pick for).
+  const viewable = members.filter((m) => m.id === myMemberId || !anonymous || (canManage && !m.joined));
 
-  const setVote = (candidateId: string, vote: Vote) => {
-    const current = voteOf(candidateId, actingFor);
-    const next = current === vote ? null : vote;
-    setLocal((s) => ({ ...s, [candidateId]: { ...s[candidateId], [actingFor]: next } }));
+  /** vote null clears the pick. dayId: undefined keeps the chosen day, null clears it. */
+  const setPick = (activityId: string, vote: Vote | null, dayId?: string | null) => {
+    const who = person.id;
+    if (!editable) return;
+    const current = pickOf(activityId, who);
+    const next: Pick | null = vote ? { vote, dayId: dayId === undefined ? (current?.dayId ?? null) : dayId } : null;
+    setLocal((s) => ({ ...s, [activityId]: { ...s[activityId], [who]: next } }));
     start(async () => {
-      const r = await castVote(candidateId, next, actingFor === myMemberId ? undefined : actingFor);
+      const r = await pickActivity(tripId, activityId, { vote, dayId, onBehalfOf: who === myMemberId ? undefined : who });
       if (!r.ok) {
         toast({ tone: "error", title: r.error });
-        setLocal((s) => ({ ...s, [candidateId]: { ...s[candidateId], [actingFor]: current ?? null } }));
+        setLocal((s) => ({ ...s, [activityId]: { ...s[activityId], [who]: current ?? null } }));
       }
     });
   };
-
-  const pickExtra = (e: PickExtra, vote: Vote) => {
-    const existing = candidateFor(e.activityId, e.candidateId);
-    if (existing) return setVote(existing, vote);
-    start(async () => {
-      const r = await addCandidate(tripId, e.activityId);
-      if (!r.ok) return toast({ tone: "error", title: r.error });
-      setLocalCandidates((s) => ({ ...s, [e.activityId]: r.candidateId }));
-      // Adding it counts as "I'm in" for you; anything else (or a vote for someone else) is recorded on top.
-      if (vote !== "interested" || actingFor !== myMemberId) {
-        setLocal((s) => ({ ...s, [r.candidateId]: { ...s[r.candidateId], [actingFor]: vote } }));
-        const v = await castVote(r.candidateId, vote, actingFor === myMemberId ? undefined : actingFor);
-        if (!v.ok) toast({ tone: "error", title: v.error });
-      } else setLocal((s) => ({ ...s, [r.candidateId]: { ...s[r.candidateId], [myMemberId]: "interested" } }));
-    });
-  };
+  const setVote = (activityId: string, vote: Vote) => setPick(activityId, voteOf(activityId, person.id) === vote ? null : vote);
 
   // Consecutive days in one place form a stop; extra ideas for a place are offered once, after its first stop.
   const stops = useMemo(() => {
@@ -127,39 +130,47 @@ export function PicksPanel({
     });
   }, [days, extras]);
   const dayNumber = new Map(days.map((d, i) => [d.id, i + 1]));
+  const dayIndex = new Map(days.map((d, i) => [d.id, i]));
+  const joinedCount = members.filter((m) => m.joined).length;
 
   return (
     <div>
-      <div className="rounded-md border border-line bg-surface p-5">
-        <h2 className="font-sans text-base font-semibold">How picking works</h2>
-        <ol className="mt-2 grid gap-2 text-sm text-muted md:grid-cols-4">
-          <li><strong className="text-ink">1.</strong> {ownerName}'s itinerary is the base plan. You're in for everything unless you say otherwise.</li>
-          <li><strong className="text-ink">2.</strong> Mark <em>Skip</em> or <em>Already done</em> on anything you don't want, and <em>Must do</em> on favourites.</li>
-          <li><strong className="text-ink">3.</strong> Under each place, add anything else you'd like to do there.</li>
-          <li><strong className="text-ink">4.</strong> Everyone's picks are visible, and {ownerName} turns them into each person's plan.</li>
+      <details className="group rounded-md border border-line bg-surface">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-3.5 text-sm [&::-webkit-details-marker]:hidden">
+          <span><strong>Your board starts as {ownerName}'s plan.</strong> <span className="text-muted">Drag things out, drag ideas in. {joinedCount} of {Math.max(expectedTravellers, members.length)} have joined.</span></span>
+          <span className="shrink-0 font-medium text-accent group-open:hidden">How it works</span>
+          <ChevronDown className="hidden size-4 shrink-0 group-open:block" aria-hidden />
+        </summary>
+        <ol className="grid gap-2 border-t border-line px-5 py-4 text-sm text-muted md:grid-cols-4">
+          <li><strong className="text-ink">1.</strong> {ownerName}'s itinerary is the base plan: every day starts with it, and you're in for all of it.</li>
+          <li><strong className="text-ink">2.</strong> Drag what you'd skip, or have done before, to <em>Not doing</em>. Star your favourites.</li>
+          <li><strong className="text-ink">3.</strong> Drag anything from <em>Ideas</em> onto a day at that place to add it. On a phone, use the buttons on each card.</li>
+          <li><strong className="text-ink">4.</strong> Everyone can see everyone's board, and {ownerName} turns them into each person's plan.</li>
         </ol>
-      </div>
+      </details>
+      <div className="mt-4"><BasePlanPdf tripId={tripId} pdf={pdf} ownerName={ownerName} canManage={canManage} compact /></div>
 
-      <div className="z-10 -mx-4 mt-5 md:sticky md:top-[7.25rem] flex flex-col gap-3 border-b border-line bg-bg/95 px-4 py-3 backdrop-blur md:mx-0 md:flex-row md:items-center md:justify-between md:px-0">
+      <div className="z-10 -mx-4 mt-5 flex flex-col gap-3 border-b border-line bg-bg/95 px-4 py-3 backdrop-blur md:sticky md:top-[7.25rem] md:mx-0 md:flex-row md:items-center md:justify-between md:px-0">
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="View">
           {(
             [
-              ["mine", "My picks"],
-              ["everyone", "Who's in"],
-              ["plans", "Personal plans"],
+              ["board", "Board", LayoutGrid],
+              ["list", "List", List],
+              ["everyone", "Who's in", null],
+              ["plans", "Personal plans", null],
             ] as const
-          ).map(([k, l]) => (
-            <button key={k} type="button" aria-pressed={view === k} onClick={() => setView(k)} className={cn("h-9 rounded-full border px-4 text-sm font-medium", view === k ? "border-brand bg-brand text-brand-ink" : "border-line bg-surface text-muted hover:text-ink")}>
+          ).map(([k, l, Icon]) => (
+            <button key={k} type="button" aria-pressed={view === k} onClick={() => setView(k)} className={cn("inline-flex h-9 items-center gap-1.5 rounded-full border px-4 text-sm font-medium", view === k ? "border-brand bg-brand text-brand-ink" : "border-line bg-surface text-muted hover:text-ink")}>
+              {Icon && <Icon className="size-4" aria-hidden />}
               {l}
             </button>
           ))}
         </div>
-        {view === "mine" && canManage && unjoined.length > 0 && (
+        {(view === "board" || view === "list") && viewable.length > 1 && (
           <label className="flex items-center gap-2 text-sm">
-            <span className="text-muted">Picking for</span>
-            <select className="field h-9 w-auto" value={actingFor} onChange={(e) => setActingFor(e.target.value)}>
-              <option value={myMemberId}>Me</option>
-              {unjoined.map((m) => <option key={m.id} value={m.id}>{m.name} (not joined)</option>)}
+            <span className="text-muted">Board of</span>
+            <select className="field h-9 w-auto" value={person.id} onChange={(e) => setPersonId(e.target.value)}>
+              {viewable.map((m) => <option key={m.id} value={m.id}>{m.id === myMemberId ? `${m.name} (me)` : m.joined ? m.name : `${m.name} (not joined: you pick)`}</option>)}
             </select>
           </label>
         )}
@@ -176,18 +187,22 @@ export function PicksPanel({
         )}
       </div>
 
-      {canManage && <BuildPlans tripId={tripId} />}
+      {canManage && <BuildPlans tripId={tripId} joined={joinedCount} expected={Math.max(expectedTravellers, members.length)} />}
 
-      {view === "mine" && (
+      {view === "board" && <PlanBoard days={days} extras={extras} members={members} pdf={pdf} editable={editable} personId={person.id} personName={personName} groupSize={Math.max(expectedTravellers, members.length)} pickOf={pickOf} setPick={setPick} />}
+
+      {view === "list" && (
         <div className="mt-6 space-y-8">
-          {actingFor !== myMemberId && <p className="rounded-md bg-highlight-soft px-4 py-2.5 text-sm">You're recording picks for <strong>{actingName}</strong>. They can change them after joining.</p>}
+          {person.id !== myMemberId && (editable
+            ? <p className="rounded-md bg-highlight-soft px-4 py-2.5 text-sm">You're recording picks for <strong>{person.name}</strong>. They can change them after joining.</p>
+            : <p className="rounded-md bg-surface-2 px-4 py-2.5 text-sm">You're looking at <strong>{person.name}</strong>'s picks. Only they can change them.</p>)}
           {stops.map((s, si) => (
             <section key={si} aria-label={s.name ?? "Stop"} className="space-y-4">
               {s.days.map((d) => (
-                <DayCard key={d.id} day={d} n={dayNumber.get(d.id)!}>
+                <DayCard key={d.id} day={d} n={dayNumber.get(d.id)!} pdf={pdf} index={dayIndex.get(d.id)!}>
                   {d.items.map((i) =>
-                    i.candidateId ? (
-                      <ActivityRow key={i.id} item={i} members={members} anonymous={anonymous} mine={voteOf(i.candidateId, actingFor)} voteOf={(m) => voteOf(i.candidateId, m)} onVote={(v) => setVote(i.candidateId!, v)} who={actingFor === myMemberId ? "you" : actingName} actingFor={actingFor} />
+                    isActivity(i) ? (
+                      <ActivityRow key={i.id} item={i} members={members} anonymous={anonymous} mine={voteOf(i.activityId, person.id)} voteOf={(m) => voteOf(i.activityId, m)} onVote={editable ? (v) => setVote(i.activityId!, v) : undefined} who={personName} actingFor={person.id} groupSize={Math.max(expectedTravellers, members.length)} />
                     ) : (
                       <PlainRow key={i.id} item={i} />
                     ),
@@ -195,16 +210,7 @@ export function PicksPanel({
                 </DayCard>
               ))}
               {s.extras.length > 0 && (
-                <Extras
-                  name={s.name ?? "this stop"}
-                  extras={s.extras}
-                  members={members}
-                  anonymous={anonymous}
-                  candidateFor={candidateFor}
-                  voteOf={voteOf}
-                  actingFor={actingFor}
-                  onPick={pickExtra}
-                />
+                <Extras name={s.name ?? "this stop"} extras={s.extras} members={members} anonymous={anonymous} voteOf={voteOf} actingFor={person.id} onPick={editable ? (e, v) => setVote(e.activityId, v) : undefined} />
               )}
             </section>
           ))}
@@ -214,19 +220,22 @@ export function PicksPanel({
       {view === "everyone" && (anonymous ? (
         <p className="mt-6 rounded-md border border-line bg-surface p-5 text-sm text-muted">This trip votes anonymously, so individual picks are hidden. The owner can switch to named votes under Members & invites.</p>
       ) : (
-        <WhoIsIn days={days} extras={extras} members={members} voteOf={voteOf} candidateFor={candidateFor} dayNumber={dayNumber} />
+        <WhoIsIn days={days} extras={extras} members={members} voteOf={voteOf} dayNumber={dayNumber} />
       ))}
 
-      {view === "plans" && <PersonalPlan days={days} extras={extras} member={members.find((m) => m.id === planFor)!} anonymous={anonymous && planFor !== myMemberId} voteOf={voteOf} candidateFor={candidateFor} dayNumber={dayNumber} />}
+      {view === "plans" && <PersonalPlan days={days} extras={extras} member={members.find((m) => m.id === planFor)!} anonymous={anonymous && planFor !== myMemberId} pickOf={pickOf} dayNumber={dayNumber} pdf={pdf} dayIndex={dayIndex} />}
     </div>
   );
 }
 
-function DayCard({ day, n, children }: { day: PickDay; n: number; children: React.ReactNode }) {
+function DayCard({ day, n, pdf, index, children }: { day: PickDay; n: number; pdf: PlanPdf | null; index: number; children: React.ReactNode }) {
   return (
     <article className="overflow-hidden rounded-md border border-line bg-surface">
       <header className="bg-brand px-4 py-3 text-brand-ink">
-        <p className="text-xs font-semibold tracking-wide uppercase opacity-80">Day {n} · {formatDay(day.date)}{day.destinationName ? ` · ${day.destinationName}` : ""}</p>
+        <div className="flex items-baseline justify-between gap-3">
+          <p className="text-xs font-semibold tracking-wide uppercase opacity-80">Day {n} · {formatDay(day.date)}{day.destinationName ? ` · ${day.destinationName}` : ""}</p>
+          {pdf && <span className="print:hidden"><DayPdfLink pdf={pdf} dayIndex={index} title={`Day ${n} in the itinerary`} /></span>}
+        </div>
         <h3 className="mt-0.5 font-serif text-xl">{day.title ?? "Free day"}</h3>
       </header>
       {day.notes && <p className="border-b border-line bg-highlight-soft px-4 py-2.5 text-sm">{day.notes}</p>}
@@ -265,15 +274,18 @@ function ActivityRow({
   onVote,
   who,
   actingFor,
+  groupSize,
 }: {
   item: PickItem;
   members: Member[];
   anonymous: boolean;
   mine: Vote | undefined;
   voteOf: (memberId: string) => Vote | undefined;
-  onVote: (v: Vote) => void;
+  /** Missing when looking at someone else's picks. */
+  onVote?: (v: Vote) => void;
   who: string;
   actingFor: string;
+  groupSize: number;
 }) {
   // The itinerary decides who an item is for (everyone, unless narrowed); votes then take people out of it.
   const party = item.participants ? members.filter((m) => item.participants!.includes(m.id)) : members;
@@ -281,7 +293,8 @@ function ActivityRow({
     const v = voteOf(m.id);
     return v && OUT.includes(v);
   });
-  const going = party.length - out.length;
+  const notJoined = item.participants ? item.participants.filter(isStandIn).length : Math.max(0, groupSize - members.length);
+  const going = party.length - out.length + notJoined;
   return (
     <li className="flex gap-3 px-4 py-3.5">
       <TimeCol item={item} />
@@ -290,10 +303,14 @@ function ActivityRow({
           <p className="font-medium">
             {item.slug ? <Link href={`/experiences/${item.slug}`} className="hover:underline">{item.title}</Link> : item.title}
           </p>
-          <p className="text-xs text-muted">{going} of {members.length} going</p>
+          <p className="text-xs text-muted">{going} of {Math.max(groupSize, members.length)} going</p>
         </div>
         {item.notes && <p className="mt-0.5 text-sm text-muted">{item.notes}</p>}
-        <VoteButtons label={`${who === "you" ? "Your" : `${who}'s`} pick for ${item.title}`} current={mine} onVote={onVote} defaultIn={!item.participants || item.participants.includes(actingFor)} />
+        {onVote ? (
+          <VoteButtons label={`${who === "you" ? "Your" : `${who}'s`} pick for ${item.title}`} current={mine} onVote={onVote} defaultIn={!item.participants || item.participants.includes(actingFor)} />
+        ) : (
+          <p className="mt-1.5 text-xs font-medium">{mine ? VOTE_LABELS[mine] : !item.participants || item.participants.includes(actingFor) ? "Going (base plan)" : "Not going"}</p>
+        )}
         {!anonymous && out.length > 0 && (
           <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
             {out.map((m) => (
@@ -343,7 +360,6 @@ function Extras({
   extras,
   members,
   anonymous,
-  candidateFor,
   voteOf,
   actingFor,
   onPick,
@@ -352,16 +368,15 @@ function Extras({
   extras: PickExtra[];
   members: Member[];
   anonymous: boolean;
-  candidateFor: (activityId: string, candidateId: string | null) => string | null;
-  voteOf: (candidateId: string | null, memberId: string) => Vote | undefined;
+  voteOf: (activityId: string | null, memberId: string) => Vote | undefined;
   actingFor: string;
-  onPick: (e: PickExtra, v: Vote) => void;
+  onPick?: (e: PickExtra, v: Vote) => void;
 }) {
   const fansOf = (e: PickExtra) => members.filter((m) => {
-    const v = voteOf(candidateFor(e.activityId, e.candidateId), m.id);
+    const v = voteOf(e.activityId, m.id);
     return v && IN.includes(v);
   });
-  const picked = extras.filter((e) => fansOf(e).length > 0 || voteOf(candidateFor(e.activityId, e.candidateId), actingFor));
+  const picked = extras.filter((e) => fansOf(e).length > 0 || voteOf(e.activityId, actingFor));
   const [open, setOpen] = useState(false);
   const rest = extras.filter((e) => !picked.includes(e));
   return (
@@ -377,7 +392,7 @@ function Extras({
       <ul className="mt-2 divide-y divide-line">
         {[...picked, ...(open ? rest : [])].map((e) => {
           const fans = fansOf(e);
-          const mine = voteOf(candidateFor(e.activityId, e.candidateId), actingFor);
+          const mine = voteOf(e.activityId, actingFor);
           return (
             <li key={e.activityId} className="py-3">
               <div className="flex flex-wrap items-baseline justify-between gap-x-3">
@@ -391,7 +406,9 @@ function Extras({
                   ))}
                 </p>
               )}
-              {mine ? (
+              {!onPick ? (
+                mine && <p className="mt-1.5 text-xs font-medium">{VOTE_LABELS[mine]}</p>
+              ) : mine ? (
                 <VoteButtons label={`Pick for ${e.title}`} current={mine} onVote={(v) => onPick(e, v)} />
               ) : (
                 <div className="mt-2 flex flex-wrap gap-1.5">
@@ -412,17 +429,15 @@ function WhoIsIn({
   extras,
   members,
   voteOf,
-  candidateFor,
   dayNumber,
 }: {
   days: PickDay[];
   extras: PickExtra[];
   members: Member[];
-  voteOf: (candidateId: string | null, memberId: string) => Vote | undefined;
-  candidateFor: (activityId: string, candidateId: string | null) => string | null;
+  voteOf: (activityId: string | null, memberId: string) => Vote | undefined;
   dayNumber: Map<string, number>;
 }) {
-  const extraRows = extras.filter((e) => members.some((m) => voteOf(candidateFor(e.activityId, e.candidateId), m.id)));
+  const extraRows = extras.filter((e) => members.some((m) => voteOf(e.activityId, m.id)));
   const cell = (v: Vote | undefined, base: boolean) => {
     if (!v) return base ? <span className="text-brand" title="Going (default)">✓</span> : <span className="text-line-strong">·</span>;
     if (v === "must_do") return <span className="font-semibold text-brand" title="Must do">★</span>;
@@ -445,7 +460,7 @@ function WhoIsIn({
         </thead>
         <tbody>
           {days.map((d) => {
-            const rows = d.items.filter((i) => i.candidateId);
+            const rows = d.items.filter(isActivity);
             if (!rows.length) return null;
             return (
               <Fragment key={d.id}>
@@ -457,7 +472,7 @@ function WhoIsIn({
                 {rows.map((i) => (
                   <tr key={i.id} className="border-b border-line">
                     <th scope="row" className="sticky left-0 z-[1] bg-surface px-3 py-2 text-left font-normal">{i.title}</th>
-                    {members.map((m) => <td key={m.id} className="px-2 py-2 text-center">{cell(voteOf(i.candidateId, m.id), !i.participants || i.participants.includes(m.id))}</td>)}
+                    {members.map((m) => <td key={m.id} className="px-2 py-2 text-center">{cell(voteOf(i.activityId, m.id), !i.participants || i.participants.includes(m.id))}</td>)}
                   </tr>
                 ))}
               </Fragment>
@@ -471,7 +486,7 @@ function WhoIsIn({
           {extraRows.map((e) => (
             <tr key={e.activityId} className="border-b border-line">
               <th scope="row" className="sticky left-0 z-[1] bg-surface px-3 py-2 text-left font-normal">{e.title}</th>
-              {members.map((m) => <td key={m.id} className="px-2 py-2 text-center">{cell(voteOf(candidateFor(e.activityId, e.candidateId), m.id), false)}</td>)}
+              {members.map((m) => <td key={m.id} className="px-2 py-2 text-center">{cell(voteOf(e.activityId, m.id), false)}</td>)}
             </tr>
           ))}
         </tbody>
@@ -486,45 +501,58 @@ function PersonalPlan({
   extras,
   member,
   anonymous,
-  voteOf,
-  candidateFor,
+  pickOf,
   dayNumber,
+  pdf,
+  dayIndex,
 }: {
   days: PickDay[];
   extras: PickExtra[];
   member: Member;
   anonymous: boolean;
-  voteOf: (candidateId: string | null, memberId: string) => Vote | undefined;
-  candidateFor: (activityId: string, candidateId: string | null) => string | null;
+  pickOf: (activityId: string | null, memberId: string) => Pick | undefined;
   dayNumber: Map<string, number>;
+  pdf: PlanPdf | null;
+  dayIndex: Map<string, number>;
 }) {
   if (anonymous) return <p className="mt-6 rounded-md border border-line bg-surface p-5 text-sm text-muted">This trip votes anonymously, so only your own plan is shown.</p>;
+  const vote = (activityId: string | null) => pickOf(activityId, member.id)?.vote;
   // An activity is in this person's plan if the itinerary includes them and they haven't opted out of it.
-  const inPlan = (i: PickItem) => (i.participants === null || i.participants.includes(member.id)) && !(i.candidateId && OUT.includes(voteOf(i.candidateId, member.id) as Vote));
+  const inPlan = (i: PickItem) => (i.participants === null || i.participants.includes(member.id)) && !(isActivity(i) && OUT.includes(vote(i.activityId) as Vote));
   const scheduled = new Set(days.flatMap((d) => d.items.map((i) => i.activityId)));
-  const waiting = extras.filter((e) => !scheduled.has(e.activityId) && IN.includes(voteOf(candidateFor(e.activityId, e.candidateId), member.id) as Vote));
-  const skipped = days.flatMap((d) => d.items.filter((i) => i.candidateId && !inPlan(i)));
+  const waiting = extras.filter((e) => !scheduled.has(e.activityId) && IN.includes(vote(e.activityId) as Vote));
+  // Extra picks show on the day they were dropped on (or the first day at that place), marked as not booked in yet.
+  const dayOfPick = (e: PickExtra) => {
+    const at = days.filter((d) => d.destinationId === e.destinationId);
+    const chosen = pickOf(e.activityId, member.id)?.dayId;
+    return at.find((d) => d.id === chosen)?.id ?? at[0]?.id ?? null;
+  };
+  const skipped = days.flatMap((d) => d.items.filter((i) => isActivity(i) && !inPlan(i) && (i.participants === null || i.participants.includes(member.id))));
   return (
     <div className="mt-6 space-y-4 print:mt-0">
       <div className="flex items-center gap-3">
         <Avatar name={member.name} color={member.color} size={40} />
         <div>
           <h2 className="font-serif text-2xl">{member.name}'s plan</h2>
-          <p className="text-sm text-muted">{skipped.length ? `Sitting out ${skipped.length} activit${skipped.length === 1 ? "y" : "ies"}` : "Doing the full base plan"}{waiting.length ? ` · ${waiting.length} extra pick${waiting.length === 1 ? "" : "s"} to be scheduled` : ""}</p>
+          <p className="text-sm text-muted">{skipped.length ? `Sitting out ${skipped.length} activit${skipped.length === 1 ? "y" : "ies"}` : "Doing the full base plan"}{waiting.length ? ` · ${waiting.length} extra pick${waiting.length === 1 ? "" : "s"}, not in the group itinerary yet` : ""}</p>
         </div>
       </div>
-      {waiting.length > 0 && (
-        <div className="rounded-md border border-accent/40 bg-surface p-4 text-sm">
-          <p className="font-semibold">Extra picks waiting for a slot</p>
-          <p className="mt-0.5 text-muted">They get a day in the itinerary when the trip owner builds the personal plans.</p>
-          <ul className="mt-2 list-disc pl-5">{waiting.map((e) => <li key={e.activityId}>{e.title}</li>)}</ul>
-        </div>
-      )}
       {days.map((d) => {
         const items = d.items.filter(inPlan);
+        const pending = waiting.filter((e) => dayOfPick(e) === d.id);
         return (
-          <DayCard key={d.id} day={d} n={dayNumber.get(d.id)!}>
-            {items.length ? items.map((i) => <PlainRow key={i.id} item={i} />) : <li className="px-4 py-3 text-sm text-muted">Free day.</li>}
+          <DayCard key={d.id} day={d} n={dayNumber.get(d.id)!} pdf={pdf} index={dayIndex.get(d.id)!}>
+            {items.map((i) => <PlainRow key={i.id} item={i} />)}
+            {pending.map((e) => (
+              <li key={e.activityId} className="flex gap-3 px-4 py-3 text-sm">
+                <div className="w-16 shrink-0 text-xs text-muted">{formatDuration(e.durationMin)}</div>
+                <div className="min-w-0">
+                  <p className="font-medium">{e.title} <span className="ml-1 rounded-full bg-accent/15 px-1.5 py-px text-[11px] font-medium text-accent">Extra pick</span></p>
+                  <p className="mt-0.5 text-muted">Time to be set when the personal plans are built.</p>
+                </div>
+              </li>
+            ))}
+            {!items.length && !pending.length && <li className="px-4 py-3 text-sm text-muted">Free day.</li>}
           </DayCard>
         );
       })}
@@ -532,7 +560,7 @@ function PersonalPlan({
   );
 }
 
-function BuildPlans({ tripId }: { tripId: string }) {
+function BuildPlans({ tripId, joined, expected }: { tripId: string; joined: number; expected: number }) {
   const toast = useToast();
   const [pending, start] = useTransition();
   const [preview, setPreview] = useState<PlanSummary | null>(null);
@@ -551,7 +579,8 @@ function BuildPlans({ tripId }: { tripId: string }) {
     <div className="mt-5 flex flex-col gap-3 rounded-md border border-brand/30 bg-surface-2 p-4 sm:flex-row sm:items-center sm:justify-between">
       <div className="text-sm">
         <p className="font-semibold">Build everyone's personal plans</p>
-        <p className="text-muted">Applies the picks to the itinerary: who goes to each activity, and extra picks placed on a day at that place. You can still edit anything afterwards.</p>
+        <p className="text-muted">Applies everyone's boards to the itinerary: who goes to each activity, and extra picks placed on the day most of their fans chose. You can run it again any time and still edit anything afterwards.</p>
+        {joined < expected && <p className="mt-1 font-medium text-warn">{joined} of {expected} have joined. Run it again once everyone has picked, so late joiners are included.</p>}
       </div>
       <div className="flex shrink-0 gap-2">
         <ButtonLink href="/trip" variant="outline" size="sm">Open itinerary</ButtonLink>

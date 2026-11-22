@@ -3,7 +3,7 @@
 import { Crown, Pencil, RefreshCw, Trash2, Unlink, UserPlus } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
-import { addSeat, deleteTrip, leaveTrip, regenerateInvite, releaseSeat, removeMember, updateMember, updateTrip } from "@/app/actions/trips";
+import { addTraveller, deleteTrip, leaveTrip, regenerateInvite, resetLogin, removeMember, updateMember, updateTrip } from "@/app/actions/trips";
 import { CopyButton } from "@/components/catalog/actions";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -36,7 +36,7 @@ export function MembersPanel({
   const [pending, start] = useTransition();
   const [editing, setEditing] = useState<M | null>(null);
   const [tripOpen, setTripOpen] = useState(false);
-  const [newSeat, setNewSeat] = useState("");
+  const [newName, setNewName] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [deleteName, setDeleteName] = useState("");
   const confirm = useConfirm();
@@ -66,7 +66,7 @@ export function MembersPanel({
                   {m.role === "editor" && <Badge>Editor</Badge>}
                 </p>
                 <p className="text-xs text-muted">
-                  {m.joined ? "Joined" : "Seat not claimed yet"} · {m.travellerType === "couple" ? `Couple${m.coupleGroup ? ` ${m.coupleGroup}` : ""}` : "Solo traveller"}
+                  {m.joined ? "Joined" : "Added by name: not joined online yet"} · {m.travellerType === "couple" ? `Couple${m.coupleGroup ? ` ${m.coupleGroup}` : ""}` : "Solo traveller"}
                 </p>
               </div>
               {(m.isMe || canManage) && (
@@ -75,14 +75,14 @@ export function MembersPanel({
                 </Button>
               )}
               {myRole === "owner" && m.role !== "owner" && m.joined && !m.isMe && (
-                <Button size="sm" variant="ghost" aria-label={`Free ${m.displayName}'s seat`} title="Free the seat (keeps their picks) so they can rejoin from another phone" disabled={pending}
-                  onClick={async () => (await confirm({ title: `Free ${m.displayName}'s seat?`, description: "Their picks stay. They can claim the seat again from the invite link, for example on a new phone.", confirmLabel: "Free seat" })) && run(() => releaseSeat(m.id), `${m.displayName}'s seat is free to claim again`)}>
+                <Button size="sm" variant="ghost" aria-label={`Reset ${m.displayName}'s login`} title="For a new phone or a cleared browser: their picks stay, and they rejoin with the same name" disabled={pending}
+                  onClick={async () => (await confirm({ title: `Reset ${m.displayName}'s login?`, description: `Use this if ${m.displayName} lost access, for example on a new phone. Their picks stay: they open the invite link and join again as "${m.displayName}".`, confirmLabel: "Reset login" })) && run(() => resetLogin(m.id), `${m.displayName} can rejoin with the invite link`)}>
                   <Unlink className="size-4" />
                 </Button>
               )}
               {myRole === "owner" && m.role !== "owner" && (
                 <Button size="sm" variant="ghost" className="text-bad" aria-label={`Remove ${m.displayName}`} disabled={pending}
-                  onClick={async () => (await confirm({ title: `Remove ${m.displayName}?`, description: "Their seat, preferences and votes will be deleted from this trip.", confirmLabel: "Remove", tone: "danger" })) && run(() => removeMember(m.id), `${m.displayName} removed`)}>
+                  onClick={async () => (await confirm({ title: `Remove ${m.displayName}?`, description: "Their preferences and picks will be deleted from this trip.", confirmLabel: "Remove", tone: "danger" })) && run(() => removeMember(m.id), `${m.displayName} removed`)}>
                   <Trash2 className="size-4" />
                 </Button>
               )}
@@ -90,16 +90,16 @@ export function MembersPanel({
           ))}
         </ul>
         {canManage && (
-          <form className="mt-3 flex gap-2" onSubmit={(e) => { e.preventDefault(); if (newSeat.trim()) run(async () => { const r = await addSeat(tripId, newSeat); if (r.ok) setNewSeat(""); return r; }, "Seat added"); }}>
-            <label htmlFor="new-seat" className="sr-only">New traveller name</label>
-            <input id="new-seat" value={newSeat} onChange={(e) => setNewSeat(e.target.value)} placeholder="Add a traveller seat (name)" className="field h-10" maxLength={40} />
-            <Button type="submit" variant="outline" disabled={pending || !newSeat.trim()}><UserPlus className="size-4" />Add</Button>
+          <form className="mt-3 flex gap-2" onSubmit={(e) => { e.preventDefault(); if (newName.trim()) run(async () => { const r = await addTraveller(tripId, newName); if (r.ok) setNewName(""); return r; }, "Traveller added"); }}>
+            <label htmlFor="new-traveller" className="sr-only">New traveller name</label>
+            <input id="new-traveller" value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Add someone who won't join online (name)" className="field h-10" maxLength={40} />
+            <Button type="submit" variant="outline" disabled={pending || !newName.trim()}><UserPlus className="size-4" />Add</Button>
           </form>
         )}
         <div className="mt-6 flex flex-wrap gap-2">
           {myRole !== "owner" && (
             <Button variant="ghost" size="sm" className="text-bad" disabled={pending}
-              onClick={async () => (await confirm({ title: "Leave this trip?", description: "Your seat and votes stay with the group, but you will lose access until someone re-invites you.", confirmLabel: "Leave trip", tone: "danger" })) && start(async () => { const r = await leaveTrip(tripId); if (r.ok) router.push("/group"); else toast({ tone: "error", title: r.error }); })}>
+              onClick={async () => (await confirm({ title: "Leave this trip?", description: "Your picks stay with the group, but you will lose access until you join again from the invite link.", confirmLabel: "Leave trip", tone: "danger" })) && start(async () => { const r = await leaveTrip(tripId); if (r.ok) router.push("/group"); else toast({ tone: "error", title: r.error }); })}>
               Leave trip
             </Button>
           )}
@@ -121,7 +121,7 @@ export function MembersPanel({
       <aside className="space-y-5 lg:col-span-5">
         <div className="rounded-md border border-line bg-surface p-5">
           <h2 className="font-sans text-base font-semibold">Invite your group</h2>
-          <p className="mt-1 text-sm text-muted">Anyone with this link or code can join and claim an open seat.</p>
+          <p className="mt-1 text-sm text-muted">Anyone with this link or code joins with just their name, in any order.</p>
           <div className="mt-4 flex items-center gap-2">
             <code className="flex-1 truncate rounded-sm bg-surface-2 px-3 py-2 text-sm">{origin}{link}</code>
             <CopyButton value={link} label="Copy link" />

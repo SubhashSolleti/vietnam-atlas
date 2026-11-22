@@ -63,7 +63,7 @@ export function Dialog({
         ? "m-0 mr-auto h-dvh max-h-dvh w-[86vw] max-w-sm rounded-none"
         : side === "bottom"
           ? "m-0 mt-auto w-full max-w-none rounded-t-lg rounded-b-none max-h-[88dvh]"
-          : cn("w-[calc(100%-2rem)] rounded-lg max-h-[88dvh]", widths);
+          : cn("m-auto w-[calc(100%-2rem)] rounded-lg max-h-[88dvh]", widths);
 
   return (
     <dialog

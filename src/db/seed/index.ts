@@ -5,10 +5,9 @@
  * the source of truth; nothing in the app reads the seed files at runtime.
  */
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { and, eq } from "drizzle-orm";
 import { openDatabase } from "../open";
 import * as t from "../schema";
 import type { DestinationBundle, MediaManifestEntry, SourceRef } from "../../content/types";
@@ -20,7 +19,7 @@ import { BUNDLE_OF } from "../../content/ticket-bundles";
 import { DEFAULT_FX } from "../../lib/money";
 import { hashPasswordSync } from "./password";
 import { applyBasePlan } from "./base-plan";
-import { BASE_PLAN_VERSION } from "../../content/base-plan";
+import { ALL_UPGRADES, UPGRADES_KEY } from "../upgrade-ids";
 
 // Seeding runs on an empty database and is simply re-run on failure, so it uses plain statements (no transactions).
 const { db, client } = openDatabase("migrations");
@@ -380,7 +379,7 @@ async function main() {
     /* Settings */
     await db.insert(t.settings).values({ key: "fx", value: DEFAULT_FX, updatedBy: "seed" }).run();
     // A fresh database already has the current base plan: mark its one-time upgrade as done.
-    await db.insert(t.settings).values({ key: "data_upgrades", value: [BASE_PLAN_VERSION], updatedBy: "seed" }).run();
+    await db.insert(t.settings).values({ key: UPGRADES_KEY, value: ALL_UPGRADES, updatedBy: "seed" }).run();
     await db
       .insert(t.settings)
       .values({
@@ -588,41 +587,33 @@ async function main() {
       })
       .returning()
       .get())!;
-    for (const [i, m] of demoTrip.members.entries()) {
-      const row = (await db
-        .insert(t.tripMembers)
-        .values({
-          tripId: trip.id,
-          // The owner seat is Subhash (site operator and trip owner); the other seats are claimed with the invite link.
-          userId: m.role === "owner" ? admin.id : null,
-          joinedAt: m.role === "owner" ? new Date().toISOString() : null,
-          displayName: m.displayName,
-          role: m.role,
-          travellerType: m.travellerType,
-          coupleGroup: "coupleGroup" in m ? m.coupleGroup : null,
-          avatarColor: m.avatarColor,
-          sort: i,
-        })
-        .returning({ id: t.tripMembers.id })
-        .get())!;
-      await db.insert(t.tripPreferences).values({ memberId: row.id }).run();
-    }
+    // Subhash (site operator) owns the trip; everyone else is added as they join from the invite link.
+    const m = demoTrip.owner;
+    const ownerSeat = (await db
+      .insert(t.tripMembers)
+      .values({ tripId: trip.id, userId: admin.id, joinedAt: new Date().toISOString(), displayName: m.displayName, role: "owner", travellerType: m.travellerType, coupleGroup: m.coupleGroup, avatarColor: m.avatarColor, sort: 0 })
+      .returning({ id: t.tripMembers.id })
+      .get())!;
+    await db.insert(t.tripPreferences).values({ memberId: ownerSeat.id }).run();
     // Base itinerary: Subhash's 14-day plan with the booked flights.
-    const ownerSeat = await db
-      .select({ id: t.tripMembers.id })
-      .from(t.tripMembers)
-      .where(and(eq(t.tripMembers.tripId, trip.id), eq(t.tripMembers.role, "owner")))
-      .get();
-    const plan = await applyBasePlan(db, trip, ownerSeat?.id ?? null, demoTrip.members.length);
+    const plan = await applyBasePlan(db, trip, ownerSeat.id, demoTrip.travellersCount);
     console.log(`✓ Base plan: ${plan.days} days, ${plan.items} itinerary items, ${plan.legs} transport legs`);
-    console.log(`✓ Demo trip "${trip.name}" with ${demoTrip.members.length} seats: invite code ${trip.inviteCode}`);
+    console.log(`✓ Demo trip "${trip.name}" for ${demoTrip.travellersCount} travellers: invite code ${trip.inviteCode}`);
   })();
 
   console.log(`\nSeed complete in ${((Date.now() - started) / 1000).toFixed(1)}s.`);
   if (generated.length) {
-    // Shown once and kept only in a local, git-ignored file readable by this OS user.
+    // Shown once and kept only in a local, git-ignored file readable by this OS user. Appended, never overwritten,
+    // so reseeding a local database can't wipe the logins saved for another one (e.g. production).
     const file = join(ROOT, "data/initial-credentials.txt");
-    writeFileSync(file, `Generated ${new Date().toISOString()}change these after first login.\n${generated.join("\n")}\n`, { mode: 0o600 });
+    let where = "database";
+    try {
+      const u = new URL(process.env.DATABASE_URL ?? process.env.POSTGRES_URL ?? "");
+      where = `${u.hostname}${u.port ? `:${u.port}` : ""}${u.pathname}`;
+    } catch {
+      /* unknown URL: keep the generic label */
+    }
+    appendFileSync(file, `\n${where}, generated ${new Date().toISOString()} (change these after first login):\n  ${generated.join("\n  ")}\n`, { mode: 0o600 });
     console.log(`\nGenerated staff passwords (also saved to data/initial-credentials.txt):\n  ${generated.join("\n  ")}`);
   } else console.log("Staff passwords taken from SEED_ADMIN_PASSWORD / SEED_EDITOR_PASSWORD.");
 }
