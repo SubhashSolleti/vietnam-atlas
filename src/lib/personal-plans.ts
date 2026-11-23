@@ -84,14 +84,26 @@ export function dayCapacity(day: { isFirst: boolean; isLast: boolean }, items: {
  * The first start time (on a 15-minute grid, from `from` to 11 PM) when `durationMin` fits between a day's timed
  * plans, trying `preferred` first. Null when nothing fits. A moved activity keeps its usual time only if that's free.
  */
-export function freeSlot(taken: { startTime?: string | null; durationMin?: number | null }[], durationMin: number, preferred?: string | null, from = "08:00") {
+export function freeSlot(taken: { startTime?: string | null; durationMin?: number | null }[], durationMin: number, preferred?: string | null | (string | null)[], from = "08:00", until = "23:00") {
   const busy = taken.filter((t) => t.startTime).map((t) => [toMin(t.startTime!), toMin(t.startTime!) + Math.max(t.durationMin ?? 0, 1)] as const);
   const first = toMin(from);
-  const fits = (s: number) => s >= first && s + durationMin <= 23 * 60 && busy.every(([a, b]) => s + durationMin <= a || s >= b);
+  const last = toMin(until);
+  const fits = (s: number) => s >= first && s + durationMin <= last && busy.every(([a, b]) => s + durationMin <= a || s >= b);
   const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
-  if (preferred && fits(toMin(preferred))) return preferred;
-  for (let s = Math.ceil(first / 15) * 15; s + durationMin <= 23 * 60; s += 15) if (fits(s)) return hhmm(s);
+  for (const p of preferred ? [preferred].flat() : []) if (p && fits(toMin(p))) return p;
+  for (let s = Math.ceil(first / 15) * 15; s + durationMin <= last; s += 15) if (fits(s)) return hhmm(s);
   return null;
+}
+
+/**
+ * When plans must end on the trip's last day: before the transfer to the flight home (a PDF's "9:45 AM Airport
+ * transfer & flight home"), or three hours before a booked flight given as a bare time. 11 PM on other days.
+ */
+export function dayEndsAt(items: { type: string; startTime?: string | null; durationMin?: number | null }[], isLast: boolean) {
+  const last = items.filter((i) => i.type === "transport" && i.startTime).sort((a, b) => toMin(a.startTime!) - toMin(b.startTime!)).at(-1);
+  if (!isLast || !last) return "23:00";
+  const end = Math.max(0, toMin(last.startTime!) - (last.durationMin ? 0 : 180));
+  return `${String(Math.floor(end / 60)).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}`;
 }
 
 /** When a day's plans can start: 8 AM, or the arrival when the day starts with one (a flight in, "Arrival & …"). */
@@ -173,8 +185,14 @@ export function buildPersonalPlans(input: { members: PlanMember[]; days: PlanDay
     ...items.filter((x) => x.dayId === dayId && x.type !== "note" && x.type !== "accommodation" && overlaps(partyOf.get(x.id) ?? null, who)),
     ...changes.additions.filter((x) => x.dayId === dayId && overlaps(x.participants, who)),
   ];
+  // A day's plans run from the arrival (if it starts with one) until the trip's last day's departure.
+  const lastDayId = [...days].sort((a, b) => a.date.localeCompare(b.date)).at(-1)?.id;
+  const windowOf = (dayId: string) => {
+    const on = items.filter((x) => x.dayId === dayId);
+    return [dayStartsAt(on), dayEndsAt(on, dayId === lastDayId)] as const;
+  };
   for (const mv of moves) {
-    mv.startTime = freeSlot(doing(mv.participants, mv.dayId), mv.durationMin, mv.startTime, dayStartsAt(items.filter((x) => x.dayId === mv.dayId)));
+    mv.startTime = freeSlot(doing(mv.participants, mv.dayId), mv.durationMin, mv.startTime, ...windowOf(mv.dayId));
     changes.additions.push(mv);
   }
 
@@ -222,7 +240,7 @@ export function buildPersonalPlans(input: { members: PlanMember[]; days: PlanDay
       title: p.title,
       durationMin: p.durationMin,
       // The first gap that fits in its fans' day (the owner can change it).
-      startTime: freeSlot(doing(fanIds, day.id), p.durationMin, null, dayStartsAt(items.filter((x) => x.dayId === day.id))),
+      startTime: freeSlot(doing(fanIds, day.id), p.durationMin, null, ...windowOf(day.id)),
       participants: asParticipants(
         members.filter((m) => fans.some((f) => f.memberId === m.id)).map((m) => m.id),
         members,

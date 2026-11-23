@@ -60,7 +60,7 @@ test("Scenario 7: the owner attaches the base plan, travellers make their own bo
 
   // The PDF opens on the page where Day 2 starts.
   await day2.getByRole("button", { name: /Day 2 in the itinerary PDF, page 2/ }).click();
-  const viewer = page.getByRole("dialog", { name: "Day 2 in the itinerary" });
+  const viewer = page.getByRole("dialog", { name: "Sun 13 Dec in the itinerary" });
   await expect(viewer.getByText("opened at page 2")).toBeVisible();
   await expect(viewer.getByRole("img", { name: "Page 2" })).toBeVisible();
   await viewer.getByRole("button", { name: "Close" }).click();
@@ -72,8 +72,12 @@ test("Scenario 7: the owner attaches the base plan, travellers make their own bo
   await expect(day2.getByText("VinWonders Phu Quoc")).toHaveCount(0);
   const show = page.locator("article").filter({ hasText: "Kiss of the Sea show" });
   await show.getByRole("button", { name: "Move Kiss of the Sea show" }).focus();
+  // A keyboard drag starts and can be cancelled.
   await page.keyboard.press("Space");
-  await page.keyboard.press("Escape"); // keyboard drag works and can be cancelled
+  const lifted = page.locator(".rotate-1").filter({ hasText: "Kiss of the Sea show" });
+  await expect(lifted).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(lifted).toHaveCount(0);
   await show.getByRole("button", { name: "Skip" }).click();
   await expect(out.locator("article").filter({ hasText: "Kiss of the Sea show" }).getByText("Skipping")).toBeVisible();
 
@@ -140,9 +144,9 @@ test("Scenario 7: the owner attaches the base plan, travellers make their own bo
   await expect(dlg.getByText(/VinWonders Phu Quoc \(6 of 7 going: everyone except Kiran\)/)).toBeVisible();
   await expect(dlg.getByText(/Parasailing \(1 of 7: Kiran\)/)).toBeVisible();
   await expect(dlg.getByText(/count as going to the base plan/)).toBeVisible();
-  await expect(dlg.getByText(/Mon 14 Dec: Dinh Cau Rock Temple for Kiran \(the group does it Sat 12 Dec\)/)).toBeVisible();
+  await expect(dlg.getByText(/Mon 14 Dec \d\d:\d\d: Dinh Cau Rock Temple for Kiran \(the group does it Sat 12 Dec\)/)).toBeVisible();
   // Placed on a Phu Quoc day with room in Kiran's own plan (the chosen day when it fits: see the unit tests).
-  await expect(dlg.getByText(/(Sat 12|Sun 13|Mon 14) Dec: Parasailing/)).toBeVisible();
+  await expect(dlg.getByText(/(Sat 12|Sun 13|Mon 14) Dec \d\d:\d\d: Parasailing/)).toBeVisible();
   await dlg.getByRole("button", { name: "Apply to itinerary" }).click();
   await toast(owner, "Personal plans updated");
   // Running it again changes nothing: Kiran's extra pick stays Kiran's, it doesn't become everyone's.

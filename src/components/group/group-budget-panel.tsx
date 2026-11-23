@@ -8,12 +8,12 @@ import { cn } from "@/lib/utils";
 export function GroupBudgetPanel({
   members,
   budget,
-  candidates,
+  ownerName,
 }: {
   members: { id: string; name: string; color: string }[];
   budget: BudgetResult;
   inrToVnd: number;
-  candidates: { id: string; title: string; perPersonVnd: number; participants: string[] | null; isQuote: boolean }[];
+  ownerName: string;
 }) {
   const activityLines = budget.lines.filter((l) => l.category === "paid_activities" || l.category === "free_activities");
   const activityTotal = activityLines.reduce((s, l) => s + l.groupTotalVnd, 0);
@@ -22,6 +22,9 @@ export function GroupBudgetPanel({
   const max = Math.max(1, ...Object.values(budget.perMember));
   return (
     <div className="space-y-8">
+      <p className="rounded-md bg-surface-2 px-4 py-2.5 text-sm">
+        These costs follow the group itinerary. Skips, moves and ideas on people's boards count here once {ownerName} builds the personal plans.
+      </p>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Kpi label="Total activity cost (group)" value={<Money vnd={activityTotal} />} />
         <Kpi label="Shared costs (split)" value={<Money vnd={budget.sharedTotalVnd} />} />
@@ -56,24 +59,24 @@ export function GroupBudgetPanel({
         <p className="mt-2 text-xs text-muted">Totals include planned activities, transport, stays, expenses and illustrative daily estimates (food, local transport, accommodation for unplanned nights). Differences between travellers come from optional activities.</p>
       </section>
       <section aria-labelledby="appr">
-        <h2 id="appr" className="mb-4 text-2xl">Approved activities</h2>
-        {candidates.length ? (
+        <h2 id="appr" className="mb-4 text-2xl">Planned activities</h2>
+        {activityLines.length ? (
           <ul className="divide-y divide-line rounded-md border border-line bg-surface text-sm">
-            {candidates.map((c) => {
-              const n = c.participants?.length ?? members.length;
+            {activityLines.map((l) => {
+              const n = l.participantIds.length;
               return (
-                <li key={c.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
-                  <span className="min-w-0 flex-1 font-medium">{c.title}</span>
+                <li key={l.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
+                  <span className="min-w-0 flex-1 font-medium">{l.label}</span>
                   <span className="text-muted">{n === members.length ? "Everyone" : `${n} of ${members.length}`}</span>
-                  <span className="w-32 text-right"><Money vnd={c.perPersonVnd} showVnd={false} /> pp</span>
-                  <span className="w-36 text-right font-semibold"><Money vnd={c.perPersonVnd * n} showVnd={false} /> group</span>
-                  <span className="w-20 text-right text-xs text-muted">{c.isQuote ? "Quote" : "Estimate"}</span>
+                  <span className="w-32 text-right"><Money vnd={l.perParticipantVnd} showVnd={false} /> pp</span>
+                  <span className="w-36 text-right font-semibold"><Money vnd={l.groupTotalVnd} showVnd={false} /> group</span>
+                  <span className="w-20 text-right text-xs text-muted">{l.isQuote ? "Quote" : "Estimate"}</span>
                 </li>
               );
             })}
           </ul>
         ) : (
-          <p className="text-sm text-muted">No approved activities yet.</p>
+          <p className="text-sm text-muted">No activities planned yet.</p>
         )}
       </section>
     </div>

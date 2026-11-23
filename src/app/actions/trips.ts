@@ -521,6 +521,11 @@ export async function removeCandidate(candidateId: string) {
     const user = await requireUser();
     const { candidate, member } = await candidateWithAccess(candidateId, user.id);
     if (candidate.addedBy !== member.id && member.role === "member") throw new UserError("Only the person who added it, an editor or the owner can remove it.");
+    // Removing it deletes everyone's picks of it, so once others have picked it, only the owner or an editor can.
+    if (member.role === "member") {
+      const others = await db.select({ id: t.groupVotes.memberId }).from(t.groupVotes).where(and(eq(t.groupVotes.candidateId, candidateId), ne(t.groupVotes.memberId, member.id))).all();
+      if (others.length) throw new UserError(`${others.length === 1 ? "Someone else has" : `${others.length} others have`} picked it too, so only the owner or an editor can remove it. You can remove your own pick.`);
+    }
     await db.delete(t.tripCandidates).where(eq(t.tripCandidates.id, candidateId)).run();
     await touchTrip(candidate.tripId);
     revalidatePath("/", "layout");

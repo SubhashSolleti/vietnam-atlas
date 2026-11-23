@@ -355,7 +355,7 @@ export async function tripBudget(trip: Trip) {
         .all()
     : [];
   const bundleByActivity = new Map(bundleRows.map((r) => [r.activityId, r.bundle]));
-  const dedupedLines = dedupeBundles(lines, (l) => bundleByActivity.get(activityOfLine.get(l.id) ?? ""), memberIds.length);
+  const dedupedLines = dedupeBundles(lines, (l) => bundleByActivity.get(activityOfLine.get(l.id) ?? ""), memberIds);
 
   const s = trip.settings;
   const result = computeBudget({

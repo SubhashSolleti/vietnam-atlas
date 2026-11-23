@@ -43,7 +43,7 @@ import { isStandIn } from "@/lib/party";
 import { dayCapacity } from "@/lib/personal-plans";
 import { cn, formatDay, formatDuration } from "@/lib/utils";
 import { DayPdfLink, type PlanPdf } from "./base-plan-pdf";
-import { boardFor, boardLoad, IN_VOTES, OUT_VOTES, type BoardDay, type PlacedActivity } from "./board-model";
+import { boardFor, boardLoad, IN_VOTES, OUT_VOTES, type BoardDay, type PlacedActivity, type PlacedExtra } from "./board-model";
 import type { BoardMember, Pick, PickDay, PickExtra, PickItem, Vote } from "./picks-panel";
 
 const OUT_LABEL: Partial<Record<Vote, string>> = { not_interested: "Skipping", cannot: "Can't make it", done_before: "Already done" };
@@ -334,6 +334,26 @@ export function PlanBoard({
     </OutBox>
   );
 
+  /** An idea this person added to a day. */
+  const extraCard = (e: PlacedExtra, day: PickDay) => {
+    const p = mine(e.activityId);
+    const others = fansOf(e.activityId).filter((m) => m.id !== personId);
+    const data: DragData = { activityId: e.activityId, title: e.title, kind: "extra", dayId: day.id, homeDayId: null, place: e.destinationId, durationMin: e.durationMin };
+    return (
+      <Card key={e.activityId} data={data} editable={editable} accent time={e.time} durationMin={e.durationMin} title={e.title} slug={e.slug} star={p?.vote === "must_do"}
+        badge={personName === "you" ? "Your pick" : `${personName}'s pick`}
+        meta={e.time ? <>Not in the group plan yet{others.length ? ` · ${others.length} other${others.length === 1 ? " wants" : "s want"} it` : ""}</> : NO_ROOM} people={fansOf(e.activityId)} peopleLabel="want to do this">
+        {editable && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <StarButton on={p?.vote === "must_do"} title={e.title} onClick={() => setPick(e.activityId, p?.vote === "must_do" ? "interested" : "must_do")} />
+            {daysAt(e.destinationId).length > 1 && <DayPicker label={`Move ${e.title} to another day`} verb="Move" days={daysAt(e.destinationId).filter((x) => x.id !== day.id)} dayN={dayN} full={(x) => full(x, e.durationMin)} onPick={(dayId) => toDay(data, dayId)} />}
+            <SmallButton onClick={() => setPick(e.activityId, null, null)} icon={Undo2}>Remove</SmallButton>
+          </div>
+        )}
+      </Card>
+    );
+  };
+
   return (
     <div className="mt-6">
       {!editable && <p className="mb-3 rounded-md bg-surface-2 px-4 py-2.5 text-sm">{readOnlyNote ?? <>You're looking at <strong>{personName}</strong>'s board. Only they can change it.</>}</p>}
@@ -413,11 +433,13 @@ export function PlanBoard({
                   dragging={drag}
                   placeName={placeName}
                   dayN={dayN}
-                  onAddIdea={editable ? () => setPicker({ dayId: b.day.id, replace: null }) : undefined}
+                  onAddIdea={editable && b.day.destinationId ? () => setPicker({ dayId: b.day.id, replace: null }) : undefined}
                 >
                   {inTimeOrder(b).map((x) =>
                     "fixed" in x ? (
                       <FixedRow key={x.fixed.id} item={x.fixed} />
+                    ) : "e" in x ? (
+                      extraCard(x.e, b.day)
                     ) : (
                     <ActivityCard
                       key={x.a.item.id}
@@ -439,24 +461,6 @@ export function PlanBoard({
                     />
                     ),
                   )}
-                  {b.extras.map((e) => {
-                    const p = mine(e.activityId);
-                    const others = fansOf(e.activityId).filter((m) => m.id !== personId);
-                    const data: DragData = { activityId: e.activityId, title: e.title, kind: "extra", dayId: b.day.id, homeDayId: null, place: e.destinationId, durationMin: e.durationMin };
-                    return (
-                      <Card key={e.activityId} data={data} editable={editable} accent durationMin={e.durationMin} title={e.title} slug={e.slug} star={p?.vote === "must_do"}
-                        badge={personName === "you" ? "Your pick" : `${personName}'s pick`}
-                        meta={<>Not in the group plan yet{others.length ? ` · ${others.length} other${others.length === 1 ? "" : "s"} want it` : ""}</>} people={fansOf(e.activityId)} peopleLabel="want to do this">
-                        {editable && (
-                          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                            <StarButton on={p?.vote === "must_do"} title={e.title} onClick={() => setPick(e.activityId, p?.vote === "must_do" ? "interested" : "must_do")} />
-                            {daysAt(e.destinationId).length > 1 && <DayPicker label={`Move ${e.title} to another day`} verb="Move" days={daysAt(e.destinationId).filter((x) => x.id !== b.day.id)} dayN={dayN} full={(x) => full(x, e.durationMin)} onPick={(dayId) => toDay(data, dayId)} />}
-                            <SmallButton onClick={() => setPick(e.activityId, null, null)} icon={Undo2}>Remove</SmallButton>
-                          </div>
-                        )}
-                      </Card>
-                    );
-                  })}
                 </DayBox>
               ))}
             </div>
@@ -491,9 +495,15 @@ export function PlanBoard({
   );
 }
 
-/** A day's flights, transfers and meals between its activities, by time (untimed ones last). */
+const NO_ROOM = "No free time left on this day for it: move it to another day or skip something.";
+
+/** A day's flights, transfers and meals between its activities and added ideas, by time (untimed ones last). */
 function inTimeOrder(b: BoardDay) {
-  const rows: ({ time: string | null; fixed: PickItem } | { time: string | null; a: PlacedActivity })[] = [...b.fixed.map((fixed) => ({ time: fixed.time, fixed })), ...b.activities.map((a) => ({ time: a.time, a }))];
+  const rows: ({ time: string | null; fixed: PickItem } | { time: string | null; a: PlacedActivity } | { time: string | null; e: PlacedExtra })[] = [
+    ...b.fixed.map((fixed) => ({ time: fixed.time, fixed })),
+    ...b.activities.map((a) => ({ time: a.time, a })),
+    ...b.extras.map((e) => ({ time: e.time, e })),
+  ];
   return rows.sort((x, y) => (x.time ?? "99").localeCompare(y.time ?? "99"));
 }
 
@@ -543,7 +553,11 @@ function ActivityCard({
   return (
     <Card data={data} editable={editable} muted={a.joinable} accent={!a.joinable && (i.optIn || !!a.movedFrom)} time={a.time} durationMin={i.durationMin} title={i.title} slug={i.slug} star={vote === "must_do"}
       badge={badge} people={going} count={going.length + notJoined} peopleLabel="going" total={total}
-      meta={a.movedFrom ? `The group does it on Day ${dayN.get(a.movedFrom)}; ${personName === "you" ? "you" : personName} on this day.` : undefined}>
+      meta={
+        a.movedFrom
+          ? a.time ? `The group does it on Day ${dayN.get(a.movedFrom)}; ${personName === "you" ? "you" : personName} on this day.` : NO_ROOM
+          : a.pickedFor ? `${personName === "you" ? "You" : personName} picked Day ${dayN.get(a.pickedFor)}; the group plan has it on this day, with the others doing it.` : undefined
+      }>
       {editable && (
         <div className="mt-2 flex flex-wrap items-center gap-1.5">
           {a.joinable ? (
@@ -624,7 +638,7 @@ function DayBox({
         {pdf?.dayTexts?.[n - 1] && <PdfDayText text={pdf.dayTexts[n - 1]!} ownerName={ownerName} />}
         {d.notes && <p className="rounded-sm bg-highlight-soft px-2.5 py-2 text-xs">{d.notes}</p>}
         {children}
-        {box.activities.length + box.extras.length + box.fixed.length === 0 && <p className="px-1 py-2 text-sm text-muted">Nothing planned{dragging ? "" : ". Drop an idea here."}</p>}
+        {box.activities.length + box.extras.length + box.fixed.length === 0 && <p className="px-1 py-2 text-sm text-muted">{d.destinationId ? `Nothing planned${dragging ? "" : ". Drop an idea here."}` : `Nothing planned, and no place set for this day yet: ideas can go on a day once ${ownerName} sets where you are.`}</p>}
         {dragging && highlight === false && <p className="rounded-sm border border-dashed border-line-strong px-2.5 py-2 text-center text-xs text-muted">{dragging.kind === "joinable" ? `Stays on Day ${dayN.get(dragging.dayId!)}` : `Not in ${placeName(dragging.place)}`}</p>}
         {onAddIdea && (
           <button type="button" onClick={onAddIdea} className="inline-flex h-9 items-center justify-center gap-1 rounded-md border border-dashed border-line-strong text-xs font-medium text-muted hover:border-ink hover:text-ink">

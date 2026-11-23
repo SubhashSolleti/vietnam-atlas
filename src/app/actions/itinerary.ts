@@ -1,7 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db, t } from "@/db/client";
 import { routeTemplates } from "@/content/demo-trip";
@@ -10,6 +10,7 @@ import { requireUser } from "@/lib/auth";
 import { activityCostFromPrice } from "@/lib/budget-engine";
 import { isoDate, isoDateTime, participantList } from "@/lib/validation";
 import { partyIds } from "@/lib/party";
+import { dayEndsAt, dayStartsAt, freeSlot } from "@/lib/personal-plans";
 import { assertMember, membersOf } from "@/services/trips";
 
 const time = z
@@ -97,13 +98,17 @@ export async function addItineraryItem(dayId: string, input: z.input<typeof item
       if (!cand)
         await db.insert(t.tripCandidates).values({ tripId: day.tripId, activityId: act.id, addedBy: member.id, status: "scheduled", participation: "everyone" }).onConflictDoNothing().run();
     }
-    const last = (await db.select({ sort: t.itineraryItems.sort }).from(t.itineraryItems).where(eq(t.itineraryItems.dayId, dayId)).orderBy(asc(t.itineraryItems.sort)).all()).at(-1);
+    const rows = await db.select({ id: t.itineraryItems.id, sort: t.itineraryItems.sort, startTime: t.itineraryItems.startTime }).from(t.itineraryItems).where(eq(t.itineraryItems.dayId, dayId)).orderBy(asc(t.itineraryItems.sort)).all();
+    // A timed item goes before the first one that starts later; an untimed one goes last.
+    const at = v.startTime ? rows.findIndex((r) => r.startTime && r.startTime > v.startTime!) : -1;
+    const sort = at < 0 ? (rows.at(-1)?.sort ?? -1) + 1 : rows[at]!.sort;
+    if (at >= 0) for (const r of rows.slice(at)) await db.update(t.itineraryItems).set({ sort: r.sort + 1 }).where(eq(t.itineraryItems.id, r.id)).run();
     const row = (await db
       .insert(t.itineraryItems)
       .values({
         tripId: day.tripId,
         dayId,
-        sort: (last?.sort ?? -1) + 1,
+        sort,
         type: v.type,
         activityId: v.activityId ?? null,
         title,
@@ -180,14 +185,27 @@ export async function reorderItems(moves: { dayId: string; itemIds: string[] }[]
         await assertMember(day.tripId, user.id);
         if (tripId && tripId !== day.tripId) throw new UserError("Items can only move within one trip.");
         tripId = day.tripId;
+        // What the day already has at set times, for fitting in items moved here from another day.
+        const here = await tx.select().from(t.itineraryItems).where(eq(t.itineraryItems.dayId, m.dayId)).all();
+        const taken = here.filter((i) => i.type !== "note" && i.type !== "accommodation");
+        const from = dayStartsAt(here);
+        const lastDay = await tx.select({ id: t.itineraryDays.id }).from(t.itineraryDays).where(eq(t.itineraryDays.tripId, day.tripId)).orderBy(desc(t.itineraryDays.date)).limit(1).get();
+        const until = dayEndsAt(here, lastDay?.id === m.dayId);
         for (const [idx, id] of m.itemIds.entries()) {
           const item = await tx.select().from(t.itineraryItems).where(eq(t.itineraryItems.id, id)).get();
           if (!item || item.tripId !== day.tripId) throw new UserError("Item not found.");
-          if (item.dayId !== m.dayId && item.transportLegId) {
+          const moved = item.dayId !== m.dayId;
+          if (moved && item.transportLegId) {
             const leg = await tx.select().from(t.transportLegs).where(eq(t.transportLegs.id, item.transportLegId)).get();
             if (leg?.isFixed) throw new UserError("Booked flights can't be moved to another day.");
           }
-          await tx.update(t.itineraryItems).set({ dayId: m.dayId, sort: idx }).where(eq(t.itineraryItems.id, id)).run();
+          // A timed item moved to another day keeps its time if that's free there, else takes the first gap that fits.
+          let startTime = item.startTime;
+          if (moved && startTime && !item.transportLegId) {
+            startTime = freeSlot(taken, item.durationMin ?? 60, startTime, from, until);
+            taken.push({ ...item, startTime });
+          }
+          await tx.update(t.itineraryItems).set({ dayId: m.dayId, sort: idx, startTime }).where(eq(t.itineraryItems.id, id)).run();
         }
       }
     });

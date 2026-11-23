@@ -9,7 +9,7 @@
  *  - Extra picks not in the itinerary yet sit on the day this person chose (or the first day at that place).
  */
 import type { Pick, PickDay, PickExtra, PickItem, Vote } from "./picks-panel";
-import { dayStartsAt, freeSlot } from "@/lib/personal-plans";
+import { dayEndsAt, dayStartsAt, freeSlot } from "@/lib/personal-plans";
 
 export const OUT_VOTES: Vote[] = ["not_interested", "cannot", "done_before"];
 export const IN_VOTES: Vote[] = ["must_do", "interested"];
@@ -26,9 +26,13 @@ export type PlacedActivity = {
   joinable: boolean;
   /** When it is on this person's board: its own time, or for a moved activity the first free slot that day. */
   time: string | null;
+  /** An extra added to the group plan on another day than the one this person picked (others picked that day). */
+  pickedFor?: string | null;
 };
 export type OutActivity = { activityId: string; title: string; slug: string | null; homeDayId: string | null; destinationId: string | null; vote: Vote };
-export type BoardDay = { day: PickDay; fixed: PickItem[]; activities: PlacedActivity[]; extras: PickExtra[] };
+/** An idea this person added to a day, at the first free time that fits (null when the day has no room for it). */
+export type PlacedExtra = PickExtra & { time: string | null };
+export type BoardDay = { day: PickDay; fixed: PickItem[]; activities: PlacedActivity[]; extras: PlacedExtra[] };
 
 export function boardFor(days: PickDay[], extras: PickExtra[], personId: string, pickOf: (activityId: string, memberId: string) => Pick | undefined) {
   const byId = new Map(days.map((d) => [d.id, d]));
@@ -62,7 +66,8 @@ export function boardFor(days: PickDay[], extras: PickExtra[], personId: string,
     const inIt = list.find((x) => x.item.participants === null || x.item.participants.includes(personId));
     const chosen = p && isIn(p.vote) ? (list.find((x) => x.dayId === p.dayId) ?? list[0]!) : null;
     const at = inIt ?? chosen;
-    if (at) placed.get(at.dayId)!.activities.push({ item: at.item, homeDayId: at.dayId, movedFrom: null, joinable: false, time: at.item.time });
+    const pickedFor = p && isIn(p.vote) && p.dayId && at && p.dayId !== at.dayId && byId.has(p.dayId) ? p.dayId : null;
+    if (at) placed.get(at.dayId)!.activities.push({ item: at.item, homeDayId: at.dayId, movedFrom: null, joinable: false, time: at.item.time, pickedFor });
     else placed.get(list[0]!.dayId)!.activities.push({ item: list[0]!.item, homeDayId: list[0]!.dayId, movedFrom: null, joinable: true, time: list[0]!.item.time });
   }
 
@@ -80,22 +85,32 @@ export function boardFor(days: PickDay[], extras: PickExtra[], personId: string,
     }
     const at = days.filter((d) => d.destinationId === e.destinationId);
     const day = at.find((d) => d.id === p!.dayId) ?? at[0];
-    if (day) placed.get(day.id)!.extras.push(e);
+    if (day) placed.get(day.id)!.extras.push({ ...e, time: null });
     else ideas.push(e);
   }
 
   // A moved-in activity keeps its usual time if that's free on its new day, else takes the first gap that fits
-  // around the day's own plans. Then each day in time order.
+  // around the day's own plans; added ideas then take the first gaps left (as the plan builder places them). Then
+  // each day in time order.
   for (const b of placed.values()) {
     const taken: { startTime: string | null; durationMin: number | null }[] = [
       ...b.fixed.filter((i) => i.type !== "note" && i.type !== "accommodation" && (!i.participants || i.participants.includes(personId))).map((i) => ({ startTime: i.time, durationMin: i.durationMin })),
       ...b.activities.filter((a) => !a.movedFrom && !a.joinable).map((a) => ({ startTime: a.time, durationMin: a.item.durationMin })),
     ];
-    const from = dayStartsAt(b.day.items.map((i) => ({ type: i.type, title: i.title, startTime: i.time })));
+    const timed = b.day.items.map((i) => ({ type: i.type, title: i.title, startTime: i.time, durationMin: i.durationMin }));
+    const from = dayStartsAt(timed);
+    const until = dayEndsAt(timed, b.day.id === days.at(-1)?.id);
     for (const a of b.activities.filter((x) => x.movedFrom)) {
-      a.time = freeSlot(taken, a.item.durationMin ?? 60, a.item.time, from);
+      a.time = freeSlot(taken, a.item.durationMin ?? 60, a.item.time, from, until);
       taken.push({ startTime: a.time, durationMin: a.item.durationMin });
     }
+    // An idea swapped in for something skipped here takes its time, if that fits.
+    const freed = out.filter((o) => o.homeDayId === b.day.id).map((o) => b.day.items.find((i) => i.activityId === o.activityId)?.time ?? null);
+    for (const e of b.extras) {
+      e.time = freeSlot(taken, e.durationMin, freed, from, until);
+      taken.push({ startTime: e.time, durationMin: e.durationMin });
+    }
+    b.extras.sort((a, z) => (a.time ?? "99").localeCompare(z.time ?? "99"));
     b.activities.sort((a, z) => (a.time ?? "99").localeCompare(z.time ?? "99"));
   }
   return { days: days.map((d) => placed.get(d.id)!), out, ideas };

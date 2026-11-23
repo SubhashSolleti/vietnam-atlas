@@ -130,9 +130,17 @@ describe("dedupeBundles", () => {
   const bundles: Record<string, string> = { banaDay: "ba-na", goldenBridge: "ba-na" };
 
   it("budgets one ticket once, keeping the line that covers the most travellers", () => {
-    const out = dedupeBundles([line("goldenBridge", 950_000, ["a", "b"]), line("banaDay", 950_000, null), line("other", 100, null)], (l) => bundles[l.id], 7);
+    const out = dedupeBundles([line("goldenBridge", 950_000, ["a", "b"]), line("banaDay", 950_000, null), line("other", 100, null)], (l) => bundles[l.id], members);
     expect(out.find((l) => l.id === "banaDay")!.amountVnd).toBe(950_000);
     expect(out.find((l) => l.id === "goldenBridge")!.amountVnd).toBe(0);
     expect(out.find((l) => l.id === "other")!.amountVnd).toBe(100);
+  });
+
+  it("charges the people the kept line doesn't cover, once", () => {
+    const out = dedupeBundles([line("banaDay", 950_000, ["a", "b", "c", "d", "e"]), line("goldenBridge", 950_000, ["e", "f"])], (l) => bundles[l.id], members);
+    expect(out.find((l) => l.id === "banaDay")).toMatchObject({ amountVnd: 950_000, participants: ["a", "b", "c", "d", "e"] });
+    expect(out.find((l) => l.id === "goldenBridge")).toMatchObject({ amountVnd: 950_000, participants: ["f"] });
+    const shared = dedupeBundles([line("banaDay", 950_000, ["a", "b", "c", "e"]), { ...line("goldenBridge", 900, ["a", "c", "d"]), costMode: "total" as const }], (l) => bundles[l.id], members);
+    expect(shared.find((l) => l.id === "goldenBridge")).toMatchObject({ amountVnd: 300, participants: ["d"] });
   });
 });

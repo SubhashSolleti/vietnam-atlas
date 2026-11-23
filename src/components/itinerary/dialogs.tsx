@@ -126,8 +126,8 @@ export function AddItemDialog({ day, sources, members, onClose }: { day: DayVM; 
               <Field label="From your shortlist & wishlist" name="src">
                 {(p) => (
                   <Select {...p} value={activityId} onChange={(e) => { setActivityId(e.target.value); setCatalogPick(null); }}>
-                    <option value="">Choose,</option>
-                    {sources.map((s) => <option key={s.activityId} value={s.activityId}>{s.title} · {s.destinationName} ({s.origin}){s.scheduled ? "already scheduled" : ""}</option>)}
+                    <option value="">Choose…</option>
+                    {sources.map((s) => <option key={s.activityId} value={s.activityId}>{s.title} · {s.destinationName} ({s.origin}){s.scheduled ? " · already scheduled" : ""}</option>)}
                   </Select>
                 )}
               </Field>

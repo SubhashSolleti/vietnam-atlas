@@ -17,6 +17,15 @@ describe("computePlanAlerts", () => {
     expect(alerts.find((a) => a.kind === "overlap")?.itemIds).toEqual(["1", "2"]);
   });
 
+  it("doesn't flag plans for different people at the same time", () => {
+    const alerts = computePlanAlerts({ days: [{ date: "2026-12-20", destination: hanoi, items: [
+      { id: "1", title: "Food tour", type: "activity", startTime: "18:00", durationMin: 180, participants: ["a", "b"], activity: act() },
+      { id: "2", title: "Water puppets", type: "activity", startTime: "20:00", durationMin: 60, participants: ["c"], activity: act() },
+      { id: "3", title: "Night market", type: "activity", startTime: "20:30", durationMin: 60, participants: ["b"], activity: act() },
+    ] }], legs: [] });
+    expect(alerts.filter((a) => a.kind === "overlap").map((a) => a.itemIds)).toEqual([["1", "3"]]);
+  });
+
   it("flags activities closed in December and weather-dependent ones", () => {
     const alerts = computePlanAlerts({ days: [{ date: "2026-12-16", destination: hanoi, items: [
       { id: "c", title: "Son Doong", type: "activity", startTime: null, durationMin: 60, activity: act({ decemberStatus: "closed" }) },

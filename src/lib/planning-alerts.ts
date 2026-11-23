@@ -113,7 +113,10 @@ export function computePlanAlerts(plan: PlanSnapshot): PlanAlert[] {
     // 1. Overlaps between timed items.
     for (let a = 0; a < timed.length; a++) {
       for (let b = a + 1; b < timed.length; b++) {
-        if (timed[b]!.w.start < timed[a]!.w.end) {
+        // Two plans for different people (say, one traveller's moved activity and a tour they skipped) don't clash.
+        const [pa, pb] = [timed[a]!.i.participants, timed[b]!.i.participants];
+        const shared = !pa || !pb || pa.some((p) => pb.includes(p));
+        if (shared && timed[b]!.w.start < timed[a]!.w.end) {
           alerts.push({
             id: `overlap:${timed[a]!.i.id}:${timed[b]!.i.id}`,
             kind: "overlap",

@@ -239,23 +239,35 @@ export function computeBudget(input: BudgetInput): BudgetResult {
 }
 
 /**
- * Several listed experiences can be one ticket (e.g. Golden Bridge is part of the Ba Na Hills ticket). Keep the
- * line covering the most travellers for each bundle and zero the rest, so the ticket is budgeted once.
+ * Several listed experiences can be one ticket (e.g. Golden Bridge is part of the Ba Na Hills ticket). Each traveller
+ * pays for the ticket once: the line covering the most travellers keeps its cost, and the others charge only the
+ * people it doesn't cover (nothing when it covers them all).
  */
-export function dedupeBundles(lines: BudgetLine[], bundleOf: (line: BudgetLine) => string | null | undefined, memberCount: number): BudgetLine[] {
-  const reach = (l: BudgetLine) => (l.participants === null ? memberCount : new Set(l.participants).size);
-  const keep = new Map<string, BudgetLine>();
+export function dedupeBundles(lines: BudgetLine[], bundleOf: (line: BudgetLine) => string | null | undefined, memberIds: string[]): BudgetLine[] {
+  const who = (l: BudgetLine) => (l.participants === null ? memberIds : [...new Set(l.participants)].filter((p) => memberIds.includes(p)));
+  const groups = new Map<string, BudgetLine[]>();
   for (const l of lines) {
     const b = bundleOf(l);
-    if (!b || !l.amountVnd) continue;
-    const best = keep.get(b);
-    if (!best || reach(l) > reach(best) || (reach(l) === reach(best) && l.amountVnd > best.amountVnd)) keep.set(b, l);
+    if (b && l.amountVnd) groups.set(b, [...(groups.get(b) ?? []), l]);
   }
-  return lines.map((l) => {
-    const b = bundleOf(l);
-    if (!b || !l.amountVnd || keep.get(b) === l) return l;
-    return { ...l, amountVnd: 0, label: `${l.label} (same ticket as “${keep.get(b)!.label}”)` };
-  });
+  const changed = new Map<BudgetLine, BudgetLine>();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const ranked = [...group].sort((x, y) => who(y).length - who(x).length || y.amountVnd - x.amountVnd);
+    const first = ranked[0]!;
+    const covered = new Set(who(first));
+    for (const l of ranked.slice(1)) {
+      const people = who(l);
+      const rest = people.filter((p) => !covered.has(p));
+      rest.forEach((p) => covered.add(p));
+      if (rest.length === people.length) continue;
+      const label = `${l.label} (same ticket as “${first.label}”${rest.length ? `, for the ${rest.length} not on it` : ""})`;
+      // A shared total is split by head, so the people left pay their share of it.
+      const amountVnd = !rest.length ? 0 : l.costMode === "total" ? Math.round((l.amountVnd * rest.length) / people.length) : l.amountVnd;
+      changed.set(l, { ...l, amountVnd, participants: rest.length ? rest : l.participants, label });
+    }
+  }
+  return lines.map((l) => changed.get(l) ?? l);
 }
 
 /**

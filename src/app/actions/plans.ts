@@ -20,7 +20,7 @@ export type PlanSummary = {
   /** who: the names of the people going (or, when most are, of those not going), for the owner to check. */
   updated: { title: string; date: string; going: number; who: string }[];
   /** movedFrom: the day most fans chose, when the builder had to use another; baseDay: a base activity moved here. */
-  added: { title: string; date: string; going: number; who: string; movedFrom: string | null; baseDay: string | null }[];
+  added: { title: string; date: string; time: string | null; going: number; who: string; movedFrom: string | null; baseDay: string | null }[];
   unplaced: { title: string; reason: "no_day" | "day_full" }[];
   nobodyGoing: { title: string; date: string }[];
   applied: boolean;
@@ -92,7 +92,7 @@ export async function generatePersonalPlans(tripId: string, input: { apply: bool
           // The day most fans chose, if the builder had to use another one.
           const chosen = votes.filter((v) => candidates.find((c) => c.id === v.candidateId)?.activityId === a.activityId && v.dayId).map((v) => v.dayId!);
           const top = chosen.sort((x, y) => chosen.filter((c) => c === y).length - chosen.filter((c) => c === x).length)[0];
-          return { title: a.title, date: a.date, going: a.participants?.length ?? party.length, who: who(a.participants), movedFrom: !a.movedFrom && top && top !== a.dayId ? (dateOf.get(top) ?? null) : null, baseDay: a.movedFrom ? (dateOf.get(a.movedFrom) ?? null) : null };
+          return { title: a.title, date: a.date, time: a.startTime ?? null, going: a.participants?.length ?? party.length, who: who(a.participants), movedFrom: !a.movedFrom && top && top !== a.dayId ? (dateOf.get(top) ?? null) : null, baseDay: a.movedFrom ? (dateOf.get(a.movedFrom) ?? null) : null };
         }),
       ),
       unplaced: changes.unplaced.map((u) => ({ title: u.title, reason: u.reason })),

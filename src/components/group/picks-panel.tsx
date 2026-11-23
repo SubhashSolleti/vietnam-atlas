@@ -183,7 +183,7 @@ export function PicksPanel({
       </details>
       <div className="mt-4"><BasePlanPdf tripId={tripId} pdf={pdf} ownerName={ownerName} canManage={canManage} compact /></div>
 
-      <div data-sticky-top className="z-20 -mx-4 mt-5 flex flex-col gap-3 border-b border-line bg-bg/95 px-4 py-3 backdrop-blur md:sticky md:top-[7.25rem] md:mx-0 md:flex-row md:items-center md:justify-between md:px-0">
+      <div data-sticky-top className="z-20 -mx-4 mt-5 flex flex-col gap-3 border-b border-line bg-bg px-4 py-3 md:sticky md:top-[7.25rem] md:mx-0 md:flex-row md:items-center md:justify-between md:px-0">
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="View">
           {(
             [
@@ -300,12 +300,14 @@ function TimeCol({ item }: { item: PickItem }) {
   );
 }
 
-function PlainRow({ item, star, note }: { item: PickItem; star?: boolean; note?: string }) {
+function PlainRow({ item, star, note, badge }: { item: PickItem; star?: boolean; note?: string; badge?: string }) {
   return (
     <li className="flex gap-3 px-4 py-3 text-sm">
       <TimeCol item={item} />
       <div className="min-w-0">
-        <p className="font-medium">{star && <Star className="mr-1 inline size-3.5 -translate-y-px fill-current text-accent" aria-label="Must do" />}{item.title}</p>
+        <p className="font-medium">{star && <Star className="mr-1 inline size-3.5 -translate-y-px fill-current text-accent" aria-label="Must do" />}{item.title}
+          {badge && <span className="ml-1.5 rounded-full bg-accent/15 px-1.5 py-px text-[11px] font-medium text-accent">{badge}</span>}
+        </p>
         {item.notes && <p className="mt-0.5 text-muted">{item.notes}</p>}
         {note && <p className="mt-0.5 text-xs text-warn">{note}</p>}
       </div>
@@ -596,31 +598,28 @@ function PersonalPlan({
       {board.days.map((b) => {
         const d = b.day;
         const rows = [
-          ...b.fixed.filter((i) => i.participants === null || i.participants.includes(member.id)).map((i) => ({ time: i.time, item: i, movedFrom: null as string | null })),
-          ...b.activities.filter((a) => !a.joinable).map((a) => ({ time: a.time, item: a.item, movedFrom: a.movedFrom })),
+          ...b.fixed.filter((i) => i.participants === null || i.participants.includes(member.id)).map((i) => ({ time: i.time, item: i, movedFrom: null as string | null, extra: false })),
+          ...b.activities.filter((a) => !a.joinable).map((a) => ({ time: a.time, item: a.item, movedFrom: a.movedFrom, extra: false })),
+          // An idea they added: shown as a row of its own, at the first free time that day.
+          ...b.extras.map((e) => ({ time: e.time, item: { id: `extra-${e.activityId}`, type: "activity", title: e.title, time: e.time, durationMin: e.durationMin, notes: null, activityId: e.activityId, slug: e.slug, participants: [member.id] } as PickItem, movedFrom: null, extra: true })),
         ].sort((x, y) => (x.time ?? "99").localeCompare(y.time ?? "99"));
         return (
           <DayCard key={d.id} day={d} n={dayNumber.get(d.id)!} pdf={pdf} index={dayIndex.get(d.id)!}>
-            {rows.map(({ item: i, movedFrom, time }) => (
-              <PlainRow key={i.id} item={{ ...i, time }} star={isActivity(i) && vote(i.activityId) === "must_do"}
+            {rows.map(({ item: i, movedFrom, time, extra }) => (
+              <PlainRow key={i.id} item={{ ...i, time }} star={isActivity(i) && vote(i.activityId) === "must_do"} badge={extra ? "Extra pick" : undefined}
                 note={
-                  movedFrom
+                  extra
+                    ? time
+                      ? "Not in the group plan yet: added when the personal plans are built."
+                      : "This day has no free time left for it: move it to another day or skip something."
+                    : movedFrom
                     ? time
                       ? `Moved here from Day ${dayNumber.get(movedFrom)}, when the group does it.`
                       : `Moved here from Day ${dayNumber.get(movedFrom)}, but this day has no free time left for it: move it to another day or skip something.`
                     : isActivity(i) ? builderMoved(i, d) : undefined
                 } />
             ))}
-            {b.extras.map((e) => (
-              <li key={e.activityId} className="flex gap-3 px-4 py-3 text-sm">
-                <div className="w-16 shrink-0 text-xs text-muted">{formatDuration(e.durationMin)}</div>
-                <div className="min-w-0">
-                  <p className="font-medium">{vote(e.activityId) === "must_do" && <Star className="mr-1 inline size-3.5 -translate-y-px fill-current text-accent" aria-label="Must do" />}{e.title} <span className="ml-1 rounded-full bg-accent/15 px-1.5 py-px text-[11px] font-medium text-accent">Extra pick</span></p>
-                  <p className="mt-0.5 text-muted">Time to be set when the personal plans are built.</p>
-                </div>
-              </li>
-            ))}
-            {!rows.length && !b.extras.length && <li className="px-4 py-3 text-sm text-muted">Nothing planned.</li>}
+            {!rows.length && <li className="px-4 py-3 text-sm text-muted">Nothing planned.</li>}
           </DayCard>
         );
       })}
@@ -671,8 +670,8 @@ function BuildPlans({ tripId, joined, expected }: { tripId: string; joined: numb
           <div className="space-y-4 text-sm">
             {joined < expected && <p className="rounded-md bg-highlight-soft px-3 py-2">{joined} of {expected} have joined. The {expected - joined} who haven't count as going to the base plan, and get no extra picks.</p>}
             <Section title="Who's going changes" items={preview.updated.map((u) => `${formatDay(u.date)}: ${u.title} (${u.going} of ${preview.total} going: ${u.who})`)} />
-            <Section title="Moved to another day" items={preview.added.filter((a) => a.baseDay).map((a) => `${formatDay(a.date)}: ${a.title} for ${a.who} (the group does it ${formatDay(a.baseDay!)}).`)} />
-            <Section title="Extra picks added" items={preview.added.filter((a) => !a.baseDay).map((a) => `${formatDay(a.date)}: ${a.title} (${a.going} of ${preview.total}: ${a.who}). Time to be set${a.movedFrom ? `. Picked for ${formatDay(a.movedFrom)}, which was full` : ""}.`)} />
+            <Section title="Moved to another day" items={preview.added.filter((a) => a.baseDay).map((a) => `${formatDay(a.date)}${a.time ? ` ${a.time}` : ""}: ${a.title} for ${a.who} (the group does it ${formatDay(a.baseDay!)}).`)} />
+            <Section title="Extra picks added" items={preview.added.filter((a) => !a.baseDay).map((a) => `${formatDay(a.date)}${a.time ? ` ${a.time}` : ""}: ${a.title} (${a.going} of ${preview.total}: ${a.who}).${a.time ? "" : " No free time that day, so it's added without a time."}${a.movedFrom ? ` Picked for ${formatDay(a.movedFrom)}, which was full.` : ""}`)} />
             <Section title="Nobody is doing these any more" tone="warn" items={preview.nobodyGoing.map((n) => `${formatDay(n.date)}: ${n.title}. Kept in the plan; remove it if you agree.`)} />
             <Section title="Couldn't place" tone="warn" items={preview.unplaced.map((u) => `${u.title}: ${u.reason === "no_day" ? "the route doesn't stop there" : "every day there is already full"}. Ask them to skip something to make room, or add it yourself in the itinerary.`)} />
           </div>

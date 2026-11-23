@@ -243,7 +243,7 @@ export default async function GroupWorkspace({ params, searchParams }: { params:
             members={ws.members.map((m) => ({ id: m.id, name: m.displayName, color: m.avatarColor }))}
             budget={budget}
             inrToVnd={fx.inrToVnd}
-            candidates={ws.candidates.filter((c) => c.status === "approved" || c.status === "scheduled").map((c) => ({ id: c.id, title: c.card?.title ?? "Activity", perPersonVnd: c.perPersonVnd, participants: c.participants, isQuote: c.priceIsQuote }))}
+            ownerName={ownerName}
           />
         )}
       </div>

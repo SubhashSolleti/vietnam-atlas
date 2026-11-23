@@ -175,3 +175,15 @@ describe("dayStartsAt", () => {
   });
 });
 
+
+describe("dayEndsAt", () => {
+  it("ends the last day at the transfer home, or three hours before a bare flight time", async () => {
+    const { dayEndsAt, freeSlot } = await import("@/lib/personal-plans");
+    const transfer = [{ type: "transport", startTime: "09:45", durationMin: 165 }];
+    expect(dayEndsAt(transfer, true)).toBe("09:45");
+    expect(dayEndsAt(transfer, false)).toBe("23:00");
+    expect(dayEndsAt([{ type: "transport", startTime: "14:00", durationMin: null }], true)).toBe("11:00");
+    expect(freeSlot(transfer, 120, "16:30", "08:00", dayEndsAt(transfer, true))).toBeNull();
+    expect(freeSlot(transfer, 90, "16:30", "08:00", dayEndsAt(transfer, true))).toBe("08:00");
+  });
+});
