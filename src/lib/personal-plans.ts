@@ -67,13 +67,37 @@ const toMin = (hhmm: string) => {
  * Minutes a day can hold: 12 hours, less on the first day (from an hour after landing) and the last (until three
  * hours before the flight home), when those days have a timed transport item.
  */
-export function dayCapacity(day: { isFirst: boolean; isLast: boolean }, items: { type: string; startTime?: string | null }[]) {
-  const legs = items.filter((i) => i.type === "transport" && i.startTime).map((i) => toMin(i.startTime!)).sort((a, b) => a - b);
+export function dayCapacity(day: { isFirst: boolean; isLast: boolean }, items: { type: string; startTime?: string | null; durationMin?: number | null }[]) {
+  const legs = items.filter((i) => i.type === "transport" && i.startTime).sort((a, b) => toMin(a.startTime!) - toMin(b.startTime!));
   let start = 8 * 60;
   let end = 23 * 60;
-  if (day.isFirst && legs.length) start = Math.max(start, legs[0]! + 60);
-  if (day.isLast && legs.length) end = Math.min(end, legs.at(-1)! - 180);
+  const first = legs[0];
+  const last = legs.at(-1);
+  // A booked flight is a bare time: free from an hour after landing, until 3 hours before leaving. A transfer with
+  // a length (from an itinerary PDF: "9:45 AM–12:30 PM Airport transfer & flight home") already allows for that.
+  if (day.isFirst && first) start = Math.max(start, toMin(first.startTime!) + (first.durationMin ? 0 : 60));
+  if (day.isLast && last) end = Math.min(end, last.durationMin ? toMin(last.startTime!) + last.durationMin : toMin(last.startTime!) - 180);
   return Math.max(0, Math.min(DAY_CAPACITY_MIN, end - start));
+}
+
+/**
+ * The first start time (on a 15-minute grid, from `from` to 11 PM) when `durationMin` fits between a day's timed
+ * plans, trying `preferred` first. Null when nothing fits. A moved activity keeps its usual time only if that's free.
+ */
+export function freeSlot(taken: { startTime?: string | null; durationMin?: number | null }[], durationMin: number, preferred?: string | null, from = "08:00") {
+  const busy = taken.filter((t) => t.startTime).map((t) => [toMin(t.startTime!), toMin(t.startTime!) + Math.max(t.durationMin ?? 0, 1)] as const);
+  const first = toMin(from);
+  const fits = (s: number) => s >= first && s + durationMin <= 23 * 60 && busy.every(([a, b]) => s + durationMin <= a || s >= b);
+  const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+  if (preferred && fits(toMin(preferred))) return preferred;
+  for (let s = Math.ceil(first / 15) * 15; s + durationMin <= 23 * 60; s += 15) if (fits(s)) return hhmm(s);
+  return null;
+}
+
+/** When a day's plans can start: 8 AM, or the arrival when the day starts with one (a flight in, "Arrival & …"). */
+export function dayStartsAt(items: { type: string; title?: string | null; startTime?: string | null }[]) {
+  const first = items.filter((i) => i.startTime).sort((a, b) => toMin(a.startTime!) - toMin(b.startTime!))[0];
+  return first && (first.type === "transport" || /\b(?:arriv|land)/i.test(first.title ?? "")) && toMin(first.startTime!) > 8 * 60 ? first.startTime! : "08:00";
 }
 
 const IN: readonly Vote[] = ["must_do", "interested"];
@@ -81,6 +105,11 @@ const IN: readonly Vote[] = ["must_do", "interested"];
 /** Normalise a participant list: null means everyone. */
 function asParticipants(ids: string[], members: PlanMember[]) {
   return ids.length === members.length ? null : ids;
+}
+
+/** Whether two participant lists (null = everyone) share anyone. */
+function overlaps(a: string[] | null, b: string[] | null) {
+  return a === null || b === null || a.some((x) => b.includes(x));
 }
 
 function sameParticipants(a: string[] | null, b: string[] | null) {
@@ -131,14 +160,23 @@ export function buildPersonalPlans(input: { members: PlanMember[]; days: PlanDay
       partyOf.set(item.id, participants);
       if (!sameParticipants(participants, item.participants)) changes.updates.push({ itemId: item.id, participants, going: going.length });
     }
-    // Days people moved it to that don't have it yet: a copy for them, at the same time of day.
+    // Days people moved it to that don't have it yet: a copy for them.
     for (const [dayId, who] of onDay) {
       if (seen.has(dayId) || !home) continue;
       const day = days.find((d) => d.id === dayId)!;
       moves.push({ activityId, dayId, date: day.date, title: home.title ?? picks.find((p) => p.activityId === activityId)?.title ?? "Activity", durationMin: home.durationMin ?? 60, participants: asParticipants(who, members), startTime: home.startTime ?? null, movedFrom: home.dayId });
     }
   }
-  changes.additions.push(...moves);
+  // A moved activity keeps its usual time if that's free in its people's day, else takes the first gap that fits
+  // around what they're doing (not what they skipped), never before they arrive.
+  const doing = (who: string[] | null, dayId: string) => [
+    ...items.filter((x) => x.dayId === dayId && x.type !== "note" && x.type !== "accommodation" && overlaps(partyOf.get(x.id) ?? null, who)),
+    ...changes.additions.filter((x) => x.dayId === dayId && overlaps(x.participants, who)),
+  ];
+  for (const mv of moves) {
+    mv.startTime = freeSlot(doing(mv.participants, mv.dayId), mv.durationMin, mv.startTime, dayStartsAt(items.filter((x) => x.dayId === mv.dayId)));
+    changes.additions.push(mv);
+  }
 
   // 2. Extra picks: placed on the least busy matching day, for the people who want them.
   const scheduled = new Set(items.filter((i) => i.activityId).map((i) => i.activityId!));
@@ -183,6 +221,8 @@ export function buildPersonalPlans(input: { members: PlanMember[]; days: PlanDay
       date: day.date,
       title: p.title,
       durationMin: p.durationMin,
+      // The first gap that fits in its fans' day (the owner can change it).
+      startTime: freeSlot(doing(fanIds, day.id), p.durationMin, null, dayStartsAt(items.filter((x) => x.dayId === day.id))),
       participants: asParticipants(
         members.filter((m) => fans.some((f) => f.memberId === m.id)).map((m) => m.id),
         members,

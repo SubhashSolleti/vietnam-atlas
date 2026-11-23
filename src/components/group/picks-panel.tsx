@@ -183,7 +183,7 @@ export function PicksPanel({
       </details>
       <div className="mt-4"><BasePlanPdf tripId={tripId} pdf={pdf} ownerName={ownerName} canManage={canManage} compact /></div>
 
-      <div className="z-10 -mx-4 mt-5 flex flex-col gap-3 border-b border-line bg-bg/95 px-4 py-3 backdrop-blur md:sticky md:top-[7.25rem] md:mx-0 md:flex-row md:items-center md:justify-between md:px-0">
+      <div data-sticky-top className="z-20 -mx-4 mt-5 flex flex-col gap-3 border-b border-line bg-bg/95 px-4 py-3 backdrop-blur md:sticky md:top-[7.25rem] md:mx-0 md:flex-row md:items-center md:justify-between md:px-0">
         <div className="flex flex-wrap gap-1.5" role="group" aria-label="View">
           {(
             [
@@ -281,7 +281,7 @@ function DayCard({ day, n, pdf, index, children }: { day: PickDay; n: number; pd
       <header className="bg-brand px-4 py-3 text-brand-ink">
         <div className="flex items-baseline justify-between gap-3">
           <p className="text-xs font-semibold tracking-wide uppercase opacity-80">Day {n} · {formatDay(day.date)}{day.destinationName ? ` · ${day.destinationName}` : ""}</p>
-          {pdf && <span className="print:hidden"><DayPdfLink pdf={pdf} dayIndex={index} title={`Day ${n} in the itinerary`} /></span>}
+          {pdf && <span className="print:hidden"><DayPdfLink pdf={pdf} dayIndex={index} title={`${formatDay(day.date)} in the itinerary`} /></span>}
         </div>
         <h3 className="mt-0.5 font-serif text-xl">{day.title ?? "Free day"}</h3>
       </header>
@@ -597,13 +597,19 @@ function PersonalPlan({
         const d = b.day;
         const rows = [
           ...b.fixed.filter((i) => i.participants === null || i.participants.includes(member.id)).map((i) => ({ time: i.time, item: i, movedFrom: null as string | null })),
-          ...b.activities.filter((a) => !a.joinable).map((a) => ({ time: a.item.time, item: a.item, movedFrom: a.movedFrom })),
+          ...b.activities.filter((a) => !a.joinable).map((a) => ({ time: a.time, item: a.item, movedFrom: a.movedFrom })),
         ].sort((x, y) => (x.time ?? "99").localeCompare(y.time ?? "99"));
         return (
           <DayCard key={d.id} day={d} n={dayNumber.get(d.id)!} pdf={pdf} index={dayIndex.get(d.id)!}>
-            {rows.map(({ item: i, movedFrom }) => (
-              <PlainRow key={i.id} item={i} star={isActivity(i) && vote(i.activityId) === "must_do"}
-                note={movedFrom ? `Moved here from Day ${dayNumber.get(movedFrom)}, when the group does it.` : isActivity(i) ? builderMoved(i, d) : undefined} />
+            {rows.map(({ item: i, movedFrom, time }) => (
+              <PlainRow key={i.id} item={{ ...i, time }} star={isActivity(i) && vote(i.activityId) === "must_do"}
+                note={
+                  movedFrom
+                    ? time
+                      ? `Moved here from Day ${dayNumber.get(movedFrom)}, when the group does it.`
+                      : `Moved here from Day ${dayNumber.get(movedFrom)}, but this day has no free time left for it: move it to another day or skip something.`
+                    : isActivity(i) ? builderMoved(i, d) : undefined
+                } />
             ))}
             {b.extras.map((e) => (
               <li key={e.activityId} className="flex gap-3 px-4 py-3 text-sm">
@@ -614,7 +620,7 @@ function PersonalPlan({
                 </div>
               </li>
             ))}
-            {!rows.length && !b.extras.length && <li className="px-4 py-3 text-sm text-muted">Free day.</li>}
+            {!rows.length && !b.extras.length && <li className="px-4 py-3 text-sm text-muted">Nothing planned.</li>}
           </DayCard>
         );
       })}

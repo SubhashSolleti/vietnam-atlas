@@ -52,9 +52,21 @@ type CardKind = "base" | "extra" | "idea" | "out" | "joinable";
 /** What's being dragged. dayId: the day it's on for this person (null for ideas and Not doing). */
 type DragData = { activityId: string; title: string; kind: CardKind; dayId: string | null; homeDayId: string | null; place: string | null; durationMin?: number | null };
 
-// Drop on a card's "Swap" target to swap, else on the day box under the pointer. The keyboard has no pointer: day boxes by overlap.
+/** Where the pointer is during a drag (client coordinates), kept by useEdgeScroll. Null for keyboard drags. */
+const pointer: { x: number | null; y: number | null } = { x: null, y: null };
+
+// Drop on a card's "Swap" target to swap, else on the box under the pointer. What's under the pointer comes from the
+// page itself (elementsFromPoint), not remembered positions: the sticky Ideas and Not doing panels don't move when the
+// page scrolls, so their remembered positions drift and drops fell through to the day next to them. The keyboard
+// has no pointer: day boxes by overlap.
 const collision: CollisionDetection = (args) => {
   const self = `card:${(args.active.data.current as DragData | undefined)?.activityId}`;
+  if (pointer.x != null && pointer.y != null) {
+    const under = [...new Set(document.elementsFromPoint(pointer.x, pointer.y).flatMap((el) => { const z = el.closest("[data-drop]"); return z ? [z.getAttribute("data-drop")!] : []; }))];
+    const id = under.find((z) => z.startsWith("card:") && z !== self) ?? under.find((z) => !z.startsWith("card:"));
+    const c = id ? args.droppableContainers.find((x) => x.id === id && !x.disabled) : undefined;
+    return c ? [{ id: c.id, data: { droppableContainer: c, value: 0 } }] : [];
+  }
   const hits = pointerWithin(args);
   if (hits.length) {
     const cards = hits.filter((h) => String(h.id).startsWith("card:") && h.id !== self);
@@ -68,20 +80,28 @@ const collision: CollisionDetection = (args) => {
  * whenever you dragged in the upper part of a long page; it's switched off.)
  */
 function useEdgeScroll() {
-  const state = useRef<{ y: number | null; raf: number }>({ y: null, raf: 0 });
+  const state = useRef<{ top: number; raf: number }>({ top: 0, raf: 0 });
   const onMove = useCallback((e: PointerEvent | TouchEvent) => {
-    state.current.y = "touches" in e ? (e.touches[0]?.clientY ?? null) : e.clientY;
+    const p = "touches" in e ? e.touches[0] : e;
+    pointer.x = p?.clientX ?? null;
+    pointer.y = p?.clientY ?? null;
   }, []);
   const tick = useCallback(() => {
-    const y = state.current.y;
+    const y = pointer.y;
+    // The top zone starts below the sticky header and toolbars, which cover the top of the window.
     const zone = Math.min(100, window.innerHeight * 0.12);
+    const top = state.current.top;
     if (y != null) {
-      const v = y < zone ? -(zone - y) / zone : y > window.innerHeight - zone ? (y - (window.innerHeight - zone)) / zone : 0;
+      const v = y < top + zone ? -Math.min(1, (top + zone - y) / zone) : y > window.innerHeight - zone ? (y - (window.innerHeight - zone)) / zone : 0;
       if (v) window.scrollBy(0, Math.round(v * 22));
     }
     state.current.raf = requestAnimationFrame(tick);
   }, []);
   const start = useCallback(() => {
+    state.current.top = Math.max(
+      0,
+      ...[...document.querySelectorAll<HTMLElement>("[data-sticky-top]")].filter((el) => getComputedStyle(el).position === "sticky").map((el) => el.getBoundingClientRect().bottom),
+    );
     window.addEventListener("pointermove", onMove, { passive: true });
     window.addEventListener("touchmove", onMove, { passive: true });
     state.current.raf = requestAnimationFrame(tick);
@@ -90,7 +110,7 @@ function useEdgeScroll() {
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("touchmove", onMove);
     cancelAnimationFrame(state.current.raf);
-    state.current.y = null;
+    pointer.x = pointer.y = null;
   }, [onMove]);
   useEffect(() => stop, [stop]);
   return { start, stop };
@@ -181,7 +201,7 @@ export function PlanBoard({
   const mine = (activityId: string) => pickOf(activityId, personId);
   const isIn = (v: Vote | undefined) => !!v && IN_VOTES.includes(v);
   const loadOf = (dayId: string, extraMin = 0) => boardLoad(boxOf(dayId), personId, extraMin);
-  const capacityOf = (d: PickDay) => dayCapacity({ isFirst: d.id === days[0]?.id, isLast: d.id === days.at(-1)?.id }, d.items.map((i) => ({ type: i.type, startTime: i.time })));
+  const capacityOf = (d: PickDay) => dayCapacity({ isFirst: d.id === days[0]?.id, isLast: d.id === days.at(-1)?.id }, d.items.map((i) => ({ type: i.type, startTime: i.time, durationMin: i.durationMin })));
   const full = (d: PickDay, minutes: number) => loadOf(d.id, minutes) > capacityOf(d);
 
   const fansOf = (activityId: string) => members.filter((m) => isIn(pickOf(activityId, m.id)?.vote));
@@ -473,7 +493,7 @@ export function PlanBoard({
 
 /** A day's flights, transfers and meals between its activities, by time (untimed ones last). */
 function inTimeOrder(b: BoardDay) {
-  const rows: ({ time: string | null; fixed: PickItem } | { time: string | null; a: PlacedActivity })[] = [...b.fixed.map((fixed) => ({ time: fixed.time, fixed })), ...b.activities.map((a) => ({ time: a.item.time, a }))];
+  const rows: ({ time: string | null; fixed: PickItem } | { time: string | null; a: PlacedActivity })[] = [...b.fixed.map((fixed) => ({ time: fixed.time, fixed })), ...b.activities.map((a) => ({ time: a.time, a }))];
   return rows.sort((x, y) => (x.time ?? "99").localeCompare(y.time ?? "99"));
 }
 
@@ -521,7 +541,7 @@ function ActivityCard({
   const badge = a.joinable ? "Others are going" : a.movedFrom ? `Moved from Day ${dayN.get(a.movedFrom)}` : i.optIn ? "Extra pick" : "Base plan";
   const otherDays = sameDays.filter((x) => x.id !== day.id);
   return (
-    <Card data={data} editable={editable} muted={a.joinable} accent={!a.joinable && (i.optIn || !!a.movedFrom)} time={i.time} durationMin={i.durationMin} title={i.title} slug={i.slug} star={vote === "must_do"}
+    <Card data={data} editable={editable} muted={a.joinable} accent={!a.joinable && (i.optIn || !!a.movedFrom)} time={a.time} durationMin={i.durationMin} title={i.title} slug={i.slug} star={vote === "must_do"}
       badge={badge} people={going} count={going.length + notJoined} peopleLabel="going" total={total}
       meta={a.movedFrom ? `The group does it on Day ${dayN.get(a.movedFrom)}; ${personName === "you" ? "you" : personName} on this day.` : undefined}>
       {editable && (
@@ -578,6 +598,7 @@ function DayBox({
   return (
     <section
       ref={setNodeRef}
+      data-drop={`day:${d.id}`}
       id={`col-${d.id}`}
       role="listitem"
       aria-label={`Day ${n}`}
@@ -592,9 +613,9 @@ function DayBox({
       <header className="rounded-t-md bg-brand px-3 py-2.5 text-brand-ink">
         <div className="flex items-baseline justify-between gap-2">
           <p className="text-xs font-semibold tracking-wide uppercase opacity-80">Day {n} · {formatDay(d.date)}</p>
-          {pdf && <DayPdfLink pdf={pdf} dayIndex={n - 1} title={`Day ${n} in the itinerary`} className="text-brand-ink" />}
+          {pdf && <DayPdfLink pdf={pdf} dayIndex={n - 1} title={`${formatDay(d.date)} in the itinerary`} className="text-brand-ink" />}
         </div>
-        <p className="font-serif text-lg leading-tight">{d.title ?? "Free day"}</p>
+        <p className="font-serif text-lg leading-tight">{d.title ?? (pdf && !pdf.dayTexts[n - 1] && !box.activities.length ? "Not in the PDF" : "Free day")}</p>
         <p className={cn("text-xs", over ? "font-semibold text-highlight" : "opacity-80")}>
           {[d.destinationName, `${Math.round(loadMin / 60)}h of ${Math.round(capacityMin / 60)}h planned`].filter(Boolean).join(" · ")}
         </p>
@@ -603,7 +624,7 @@ function DayBox({
         {pdf?.dayTexts?.[n - 1] && <PdfDayText text={pdf.dayTexts[n - 1]!} ownerName={ownerName} />}
         {d.notes && <p className="rounded-sm bg-highlight-soft px-2.5 py-2 text-xs">{d.notes}</p>}
         {children}
-        {box.activities.length + box.extras.length === 0 && <p className="px-1 py-2 text-sm text-muted">Nothing planned{dragging ? "" : ". Drop an idea here."}</p>}
+        {box.activities.length + box.extras.length + box.fixed.length === 0 && <p className="px-1 py-2 text-sm text-muted">Nothing planned{dragging ? "" : ". Drop an idea here."}</p>}
         {dragging && highlight === false && <p className="rounded-sm border border-dashed border-line-strong px-2.5 py-2 text-center text-xs text-muted">{dragging.kind === "joinable" ? `Stays on Day ${dayN.get(dragging.dayId!)}` : `Not in ${placeName(dragging.place)}`}</p>}
         {onAddIdea && (
           <button type="button" onClick={onAddIdea} className="inline-flex h-9 items-center justify-center gap-1 rounded-md border border-dashed border-line-strong text-xs font-medium text-muted hover:border-ink hover:text-ink">
@@ -673,6 +694,7 @@ function IdeasPanel({
   return (
     <section
       ref={setNodeRef}
+      data-drop="ideas"
       id="col-ideas"
       aria-label="Ideas"
       className={cn("flex min-h-0 flex-1 flex-col rounded-md border bg-surface-2", highlight === true ? "border-brand ring-2 ring-brand/30" : "border-line", isOver && highlight && "bg-surface")}
@@ -785,6 +807,7 @@ function OutBox({ id, highlight, count, editable, children }: { id: "out" | "out
   return (
     <section
       ref={setNodeRef}
+      data-drop={id}
       id={`col-${id}`}
       aria-label="Not doing"
       className={cn("flex scroll-mt-48 flex-col rounded-md border bg-surface-2", id === "out" && "max-h-[38%] min-h-32", highlight === true ? "border-brand ring-2 ring-brand/30" : "border-line", isOver && highlight && "bg-surface")}
@@ -876,6 +899,7 @@ function Card({
       {canSwap && (
         <span
           ref={dropRef}
+          data-drop={`card:${data.activityId}`}
           className={cn(
             "absolute inset-y-1 right-1 z-10 flex w-20 flex-col items-center justify-center gap-0.5 rounded-md border-2 border-dashed text-[11px] font-semibold",
             swapping ? "border-accent bg-accent text-white" : "border-accent/60 bg-surface/90 text-accent",

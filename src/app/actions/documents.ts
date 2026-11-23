@@ -8,7 +8,8 @@ import { run, UserError } from "@/lib/action";
 import { requireUser } from "@/lib/auth";
 import { isPdf, MAX_PLAN_PDF_BYTES } from "@/lib/pdf-days";
 import { analyseItineraryPdf } from "@/lib/pdf-extract";
-import { daysBetween } from "@/lib/utils";
+import { dateRange } from "@/lib/utils";
+import { fillDaysFromPdf } from "@/db/pdf-base-plan";
 import { assertMember } from "@/services/trips";
 
 /**
@@ -25,8 +26,9 @@ export async function uploadBasePlanPdf(form: FormData) {
     if (file.size > MAX_PLAN_PDF_BYTES) throw new UserError("PDFs must be 4 MB or smaller. Try exporting it with smaller images.");
     const bytes = new Uint8Array(await file.arrayBuffer());
     if (!isPdf(bytes)) throw new UserError("That file isn't a PDF.");
-    const dayCount = daysBetween(trip.startDate, trip.endDate) + 1;
-    const { pageCount: totalPages, dayPages, dayTexts } = await analyseItineraryPdf(bytes, dayCount).catch(() => {
+    const dates = dateRange(trip.startDate, trip.endDate);
+    const dayCount = dates.length;
+    const { pageCount: totalPages, dayPages, dayTexts, days } = await analyseItineraryPdf(bytes, dates).catch(() => {
       throw new UserError("That PDF couldn't be read. Try exporting it again, or saving it with Print → Save as PDF.");
     });
     const fileName = (file.name || "itinerary.pdf").replace(/[^\p{L}\p{N} ._()-]/gu, "").replace(/\s+/g, " ").trim().slice(0, 120) || "itinerary.pdf";
@@ -36,9 +38,12 @@ export async function uploadBasePlanPdf(form: FormData) {
       .values({ tripId, kind: "base_plan", ...row })
       .onConflictDoUpdate({ target: [t.tripDocuments.tripId, t.tripDocuments.kind], set: row })
       .run();
+    // Empty days take the PDF's plan: its places, and its stops as activities everyone can move, swap or skip.
+    const members = await db.select({ id: t.tripMembers.id }).from(t.tripMembers).where(eq(t.tripMembers.tripId, tripId)).all();
+    const filled = await fillDaysFromPdf(db, tripId, days, { partySize: Math.max(members.length, trip.travellersCount), addedBy: member.id });
     await db.update(t.trips).set({ updatedAt: new Date().toISOString() }).where(eq(t.trips.id, tripId)).run();
     revalidatePath("/", "layout");
-    return { pageCount: totalPages, daysFound: dayPages.filter((p) => p != null).length, dayCount };
+    return { pageCount: totalPages, daysFound: dayPages.filter((p) => p != null).length, dayCount, filledDays: filled.days, filledActivities: filled.activities };
   });
 }
 

@@ -137,10 +137,20 @@ export async function generatePersonalPlans(tripId: string, input: { apply: bool
             costMode: home ? home.costMode : cand?.agreedPriceVnd != null ? "per_person" : est.costMode,
             participants: a.participants,
             source: "picks",
-            notes: home ? `Moved here from ${formatDay(a.movedFrom ? (dateOf.get(a.movedFrom) ?? "") : "")} on their boards.` : "Added from the group's picks: set a time.",
+            notes: home
+              ? `Moved here from ${formatDay(a.movedFrom ? (dateOf.get(a.movedFrom) ?? "") : "")} on their boards.`
+              : a.startTime
+                ? "Added from the group's picks, at the first free time that day."
+                : "Added from the group's picks: set a time.",
           })
           .run();
         if (cand && !home) await tx.update(t.tripCandidates).set({ status: "scheduled", participants: a.participants, updatedAt: now }).where(eq(t.tripCandidates.id, cand.id)).run();
+      }
+      // Days that gained items stay in time order (untimed items last, in their old order).
+      for (const dayId of new Set(changes.additions.map((a) => a.dayId))) {
+        const rows = await tx.select({ id: t.itineraryItems.id, sort: t.itineraryItems.sort, startTime: t.itineraryItems.startTime }).from(t.itineraryItems).where(eq(t.itineraryItems.dayId, dayId)).all();
+        rows.sort((a, b) => (a.startTime ?? "99").localeCompare(b.startTime ?? "99") || a.sort - b.sort);
+        for (const [i, r] of rows.entries()) if (r.sort !== i) await tx.update(t.itineraryItems).set({ sort: i }).where(eq(t.itineraryItems.id, r.id)).run();
       }
       await tx.update(t.trips).set({ updatedAt: now }).where(eq(t.trips.id, trip.id)).run();
     });

@@ -34,15 +34,20 @@ export function BasePlanPdf({ tripId, pdf, ownerName, canManage, compact }: { tr
       form.set("file", file);
       const r = await uploadBasePlanPdf(form).catch(() => ({ ok: false as const, error: "The upload didn't go through. Check your connection and try again." }));
       if (!r.ok) return toast({ tone: "error", title: r.error });
+      const pages =
+        r.daysFound === r.dayCount
+          ? `${r.pageCount} pages; each day links to its page.`
+          : r.daysFound
+            ? `${r.pageCount} pages; ${r.daysFound} of the ${r.dayCount} trip days are in it.`
+            : `${r.pageCount} pages. No "Day 1, Day 2…" headings were found, so days open at the first page.`;
       toast({
         tone: "success",
-        title: "Itinerary PDF attached",
-        description:
-          r.daysFound === r.dayCount
-            ? `${r.pageCount} pages. Each day on the board links to its page.`
-            : r.daysFound
-              ? `${r.pageCount} pages. Found where ${r.daysFound} of the ${r.dayCount} days start; the others open at the page before.`
-              : `${r.pageCount} pages. No "Day 1, Day 2…" headings were found, so days open at the first page.`,
+        title: r.filledDays ? `Itinerary PDF attached: ${r.filledDays} ${r.filledDays === 1 ? "day" : "days"} filled from it` : "Itinerary PDF attached",
+        description: r.filledDays
+          ? `${r.filledActivities} activities are on the board for everyone to keep, move, swap or skip. ${pages}`
+          : r.daysFound
+            ? `Days that already had plans were kept as they were. ${pages}`
+            : pages,
       });
     });
   };
@@ -100,6 +105,8 @@ export function BasePlanPdf({ tripId, pdf, ownerName, canManage, compact }: { tr
 export function DayPdfLink({ pdf, dayIndex, title, className }: { pdf: PlanPdf; dayIndex: number; title: string; className?: string }) {
   const [open, setOpen] = useState(false);
   const { page, exact } = pageForDay(pdf.dayPages, dayIndex);
+  // A day before the PDF starts (the flight out, say) has no page of its own to open.
+  if (!pdf.dayPages.slice(0, dayIndex + 1).some(Boolean)) return null;
   return (
     <>
       <button type="button" onClick={() => setOpen(true)} className={cn("-my-1.5 inline-flex min-h-8 items-center gap-1 px-1 text-xs font-medium underline-offset-2 hover:underline", className)} aria-label={`Day ${dayIndex + 1} in the itinerary PDF, page ${page}`}>

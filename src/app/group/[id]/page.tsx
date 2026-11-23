@@ -103,7 +103,7 @@ export default async function GroupWorkspace({ params, searchParams }: { params:
         </div>
       </div>
 
-      <nav aria-label="Workspace sections" className="sticky top-16 z-20 -mx-4 mt-6 border-b border-line bg-bg/95 px-4 backdrop-blur md:mx-0 md:px-0">
+      <nav aria-label="Workspace sections" data-sticky-top className="sticky top-16 z-20 -mx-4 mt-6 border-b border-line bg-bg/95 px-4 backdrop-blur md:mx-0 md:px-0">
         <ul className="flex gap-1 relative overflow-x-auto scrollbar-none">
           {TABS.map(([key, label]) => (
             <li key={key}>

@@ -35,7 +35,8 @@ describe("buildPersonalPlans", () => {
       items: [item("i1", "d1", "vinwonders", 420)],
       picks: [pick("sea-walking", [{ memberId: "b", vote: "must_do" }, { memberId: "c", vote: "interested" }, { memberId: "a", vote: "done_before" }])],
     });
-    expect(changes.additions).toEqual([{ activityId: "sea-walking", dayId: "d2", date: "2026-12-13", title: "sea-walking", durationMin: 60, participants: ["b", "c"] }]);
+    // At the first free time that day.
+    expect(changes.additions).toEqual([{ activityId: "sea-walking", dayId: "d2", date: "2026-12-13", title: "sea-walking", durationMin: 60, participants: ["b", "c"], startTime: "08:00" }]);
   });
 
   it("puts an extra pick on the day most of its fans dropped it on, if that day has room", () => {
@@ -99,6 +100,8 @@ describe("buildPersonalPlans", () => {
     expect(dayCapacity({ isFirst: false, isLast: true }, [{ type: "transport", startTime: "12:20" }])).toBe(80);
     expect(dayCapacity({ isFirst: true, isLast: false }, [{ type: "transport", startTime: "15:30" }])).toBe(390);
     expect(dayCapacity({ isFirst: false, isLast: false }, [{ type: "transport", startTime: "10:35" }])).toBe(720);
+    // A transfer with a length (from a PDF) already allows for the airport: the day runs until it ends.
+    expect(dayCapacity({ isFirst: false, isLast: true }, [{ type: "transport", startTime: "09:45", durationMin: 165 }])).toBe(270);
   });
 
   it("moves a base activity to another day for the people who moved it on their board", () => {
@@ -148,3 +151,27 @@ describe("Already done in the consensus engine", () => {
     expect(a.flags.lowInterest).toBe(false);
   });
 });
+
+describe("freeSlot", () => {
+  const day = [{ startTime: "09:30", durationMin: 420 }, { startTime: "17:00", durationMin: 300 }];
+  it("keeps the preferred time when it's free, else takes the first gap that fits", async () => {
+    const { freeSlot } = await import("@/lib/personal-plans");
+    expect(freeSlot(day, 60, "08:00")).toBe("08:00");
+    expect(freeSlot(day, 60, "15:30")).toBe("08:00");
+    expect(freeSlot(day, 30, "16:00")).toBe("08:00");
+    expect(freeSlot(day, 30, "16:30")).toBe("16:30");
+    expect(freeSlot(day, 120, "10:00")).toBeNull();
+  });
+});
+
+describe("dayStartsAt", () => {
+  it("starts a day at its arrival, so nothing is planned before you land", async () => {
+    const { dayStartsAt, freeSlot } = await import("@/lib/personal-plans");
+    const arrival = [{ type: "activity", title: "Arrival & Long Beach", startTime: "15:30", durationMin: 150 }];
+    expect(dayStartsAt(arrival)).toBe("15:30");
+    expect(freeSlot(arrival, 60, null, dayStartsAt(arrival))).toBe("18:00");
+    expect(dayStartsAt([{ type: "transport", title: "Land at PQC", startTime: "15:30" }])).toBe("15:30");
+    expect(dayStartsAt([{ type: "activity", title: "VinWonders", startTime: "09:30" }])).toBe("08:00");
+  });
+});
+

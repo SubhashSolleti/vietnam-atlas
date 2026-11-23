@@ -8,9 +8,10 @@ import * as t from "../src/db/schema";
 import { applyBasePlan } from "../src/db/seed/base-plan";
 import { BASE_PLAN_VERSION } from "../src/content/base-plan";
 import { demoTrip, tripOwner } from "../src/content/demo-trip";
-import { ITEM_SOURCE_AND_DAY_TEXTS, NO_PLACEHOLDER_SEATS, UPGRADES_KEY, VENICE_SHOW_TIME } from "../src/db/upgrade-ids";
+import { ITEM_SOURCE_AND_DAY_TEXTS, NO_PLACEHOLDER_SEATS, PDF_BASE_PLAN, UPGRADES_KEY, VENICE_SHOW_TIME } from "../src/db/upgrade-ids";
+import { fillDaysFromPdf } from "../src/db/pdf-base-plan";
 import { analyseItineraryPdf } from "../src/lib/pdf-extract";
-import { daysBetween } from "../src/lib/utils";
+import { dateRange } from "../src/lib/utils";
 
 
 
@@ -28,6 +29,7 @@ export async function runDataUpgrades(db: Database) {
     [NO_PLACEHOLDER_SEATS, removePlaceholderSeats],
     [VENICE_SHOW_TIME, veniceShowTime],
     [ITEM_SOURCE_AND_DAY_TEXTS, itemSourceAndDayTexts],
+    [PDF_BASE_PLAN, pdfBasePlan],
   ];
   for (const [id, step] of steps) {
     if (applied.has(id)) continue;
@@ -54,12 +56,39 @@ async function itemSourceAndDayTexts(tx: Tx) {
   const docs = await tx.select({ id: t.tripDocuments.id, data: t.tripDocuments.data, startDate: t.trips.startDate, endDate: t.trips.endDate }).from(t.tripDocuments).innerJoin(t.trips, eq(t.trips.id, t.tripDocuments.tripId)).all();
   for (const d of docs) {
     try {
-      const { dayPages, dayTexts } = await analyseItineraryPdf(new Uint8Array(d.data), daysBetween(d.startDate, d.endDate) + 1);
+      const { dayPages, dayTexts } = await analyseItineraryPdf(new Uint8Array(d.data), dateRange(d.startDate, d.endDate));
       await tx.update(t.tripDocuments).set({ dayPages, dayTexts }).where(eq(t.tripDocuments.id, d.id)).run();
       console.log(`db:setup: itinerary PDF read: text found for ${dayTexts.filter(Boolean).length} of ${dayTexts.length} days.`);
     } catch {
       console.log("db:setup: an itinerary PDF couldn't be read; its days keep page links only.");
     }
+  }
+}
+
+/**
+ * Re-reads attached itinerary PDFs, lining their days up with the trip's by date. A trip whose itinerary is still
+ * empty gets the PDF's plan (its places, and its stops as activities); a trip with any items is left as it is.
+ */
+async function pdfBasePlan(tx: Tx) {
+  const docs = await tx
+    .select({ id: t.tripDocuments.id, tripId: t.tripDocuments.tripId, data: t.tripDocuments.data, uploadedBy: t.tripDocuments.uploadedBy, startDate: t.trips.startDate, endDate: t.trips.endDate, travellersCount: t.trips.travellersCount })
+    .from(t.tripDocuments)
+    .innerJoin(t.trips, eq(t.trips.id, t.tripDocuments.tripId))
+    .all();
+  for (const d of docs) {
+    let read;
+    try {
+      read = await analyseItineraryPdf(new Uint8Array(d.data), dateRange(d.startDate, d.endDate));
+    } catch {
+      console.log("db:setup: an itinerary PDF couldn't be read; its days keep page links only.");
+      continue;
+    }
+    await tx.update(t.tripDocuments).set({ dayPages: read.dayPages, dayTexts: read.dayTexts }).where(eq(t.tripDocuments.id, d.id)).run();
+    const anyItem = await tx.select({ id: t.itineraryItems.id }).from(t.itineraryItems).where(eq(t.itineraryItems.tripId, d.tripId)).limit(1).get();
+    if (anyItem) continue;
+    const members = await tx.select({ id: t.tripMembers.id }).from(t.tripMembers).where(eq(t.tripMembers.tripId, d.tripId)).all();
+    const filled = await fillDaysFromPdf(tx, d.tripId, read.days, { partySize: Math.max(members.length, d.travellersCount), addedBy: d.uploadedBy });
+    console.log(`db:setup: an empty trip was filled from its itinerary PDF: ${filled.days} days, ${filled.activities} activities, ${filled.items} items.`);
   }
 }
 
